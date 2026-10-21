@@ -28,7 +28,7 @@ export const SCENE_VISUAL_PRESETS: SceneVisualPreset[] = [
   {
     id: 'neon-tunnel',
     label: '霓虹隧道',
-    description: '暗色霓虹氛围 · 施工青蓝 / 竣工琥珀 · 实心材质',
+    description: '柔和暖色材质 · 突出竣工模型 · 无线框',
     loadOblique: true,
     loadBim: true,
     loadPartial: true,
@@ -36,18 +36,18 @@ export const SCENE_VISUAL_PRESETS: SceneVisualPreset[] = [
     bimSse: 5,
     partialSse: 5,
     obliqueTint: '#1e2a3e',
-    partialTint: '#ffc87a',
+    partialTint: '#f4e8d7',
     bimOpacityDefault: 100,
     partialOpacityDefault: 100,
     bloom: true,
     bloomIntensity: 1.15,
-    ambientBoost: 1.62,
-    pulseLight: true
+    ambientBoost: 1.1,
+    pulseLight: false
   },
   {
     id: 'engineering',
     label: '工程检视',
-    description: '透视查看内部构造 · 施工/竣工半透明可调',
+    description: '中性工程材质 · 施工半透明衬底 · 竣工设备清晰呈现',
     loadOblique: true,
     loadBim: true,
     loadPartial: true,
@@ -55,12 +55,12 @@ export const SCENE_VISUAL_PRESETS: SceneVisualPreset[] = [
     bimSse: 4,
     partialSse: 4,
     obliqueTint: '#3a4a5f',
-    partialTint: '#ffd9a0',
-    bimOpacityDefault: 60,
-    partialOpacityDefault: 72,
+    partialTint: '#eaf3fa',
+    bimOpacityDefault: 38,
+    partialOpacityDefault: 100,
     bloom: false,
     bloomIntensity: 0.55,
-    ambientBoost: 1.9,
+    ambientBoost: 1.0,
     pulseLight: false
   }
 ]

@@ -20,15 +20,8 @@ import {
   OBLIQUE_TILESET_PATHS,
   PARTIAL_TUNNEL_TILESET_PATH
 } from '../config/tunnelTilesets'
-import {
-  applyInteriorPointLight,
-  attachBimGlowFrame,
-  bimInteriorEye,
-  extractBimAxisFrame,
-  setTilesetBackFaceCulling,
-  spawnClickPulse,
-  type BimAxisFrame
-} from './useTunnelModelFx'
+import { setTilesetBackFaceCulling, spawnClickPulse } from './useTunnelModelFx'
+import { useModelRoaming } from './useModelRoaming'
 import { getSceneEnvironment, type SceneEnvironmentId } from '../config/sceneEnvironment'
 
 export type BasemapMode = 'satellite' | 'vector' | 'reality'
@@ -69,7 +62,7 @@ export interface UseCesiumTunnelMapOptions {
   getSceneEnvironmentId?: () => SceneEnvironmentId
   getBasemapEnabled?: () => boolean
   getShowPartialTunnel?: () => boolean
-  /** BIM 发光亮度 0~100 */
+  /** BIM 中性照明强度 0~100 */
   getBimBrightness?: () => number
   getShowFullTunnel?: () => boolean
   onModelSelect?: (info: ModelPickInfo | null) => void
@@ -301,27 +294,9 @@ export function useCesiumTunnelMap(
   let loadedPresetId: SceneVisualPresetId | null = null
   let activeEnvironmentId: SceneEnvironmentId = 'default'
   const xrayRestoresMap = new Map<Cesium.Cesium3DTileset, () => void>()
-  let visualFxHandler: Cesium.Event.RemoveCallback | null = null
-  let visualFxPhase = 0
   let orthoLayerRef: Cesium.ImageryLayer | null = null
-  let modelFxDispose: (() => void) | null = null
-  let glowShellDispose: (() => void) | null = null
-  let partialRangeDispose: (() => void) | null = null
   let clickPulseDispose: (() => void) | null = null
   let selectedFeature: { feature: Cesium.Cesium3DTileFeature; color: Cesium.Color } | null = null
-
-  // 第一人称内部漫游
-  const firstPersonActive = ref(false)
-  let fpFrame: BimAxisFrame | null = null
-  let fpT = 0.5
-  let fpFwd = false
-  let fpBack = false
-  let fpPostRender: Cesium.Event.RemoveCallback | null = null
-  let fpRestoreCulling: (() => void) | null = null
-  let fpPrevMinZoom = 60
-  let fpKeyDown: ((e: KeyboardEvent) => void) | null = null
-  let fpKeyUp: ((e: KeyboardEvent) => void) | null = null
-  const fpObliqueShown = new Map<Cesium.Cesium3DTileset, boolean>()
 
   // Entity 分组
   let routeEntities: Cesium.Entity[] = []
@@ -335,10 +310,47 @@ export function useCesiumTunnelMap(
   let flowRunning = false
   let flowEnabled = true
   let focusedDeviceId: string | null = null
+  let lifecycleVersion = 0
   let viewSwitchSeq = 0
   /** mount 期间用户是否主动切换过维度（用于区分「用户意图」与「初始化赋值」） */
   let userSwitchedDuringMount = false
   let moveHandler: Cesium.Event.RemoveCallback | null = null
+
+  const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  const modelRoaming = useModelRoaming({
+    getViewer: () => viewer.value,
+    prepare: async () => {
+      const v = viewer.value
+      if (!v || v.isDestroyed()) return null
+      await ensureTunnelTilesets(v)
+      return getPartialTileset() ?? await loadOneTileset(v, PARTIAL_TUNNEL_TILESET_PATH, 3, 'partial')
+    },
+    getTilesets: () => tunnelTilesets,
+    onEnter: () => {
+      closeScenePopup()
+      setEntityVisible(deviceEntities, false)
+    },
+    onExit: () => {
+      const v = viewer.value
+      if (!v || v.isDestroyed()) return
+      closeScenePopup()
+      applyPresentationMode()
+      syncDeviceGraphics()
+      applyVisualEnvironment(v)
+    },
+    onEquipment: item => options?.onModelSelect?.(item ? {
+      title: item.name,
+      role: 'partial',
+      properties: { '构件编号': item.modelId, '设备类别': item.category, '数据来源': '竣工 BIM 构件', '说明': '空间位置来自模型，不代表设备实时运行状态' }
+    } : null)
+  })
+
+  function markerScale(status: MapDevicePoint['status']) {
+    return new Cesium.CallbackProperty(() => {
+      if (motionQuery.matches || (status !== 'alarm' && status !== 'warn')) return 1
+      return 1 + (Math.sin(performance.now() / 600) + 1) * 0.055
+    }, false)
+  }
 
   /* ==========================================================
    * 流动动画：用 CallbackProperty 驱动，Cesium 每帧自动重算，
@@ -532,23 +544,27 @@ export function useCesiumTunnelMap(
         prev.position = new Cesium.ConstantPositionProperty(
           Cesium.Cartesian3.fromDegrees(lng, lat, DEVICE_HEIGHT)
         )
+        prev.show = !modelRoaming.state.active
         // 图标随 dimmed/focused 变化（画布尺寸不同），需整体替换
         if (prev.billboard) {
           prev.billboard.image = new Cesium.ConstantProperty(url)
           prev.billboard.width = new Cesium.ConstantProperty(size)
           prev.billboard.height = new Cesium.ConstantProperty(size)
+          prev.billboard.scale = markerScale(p.status)
         }
         next.push(prev)
       } else {
         const e = new Cesium.Entity({
           id: `device-${p.id}`,
           name: p.name,
+          show: !modelRoaming.state.active,
           position: Cesium.Cartesian3.fromDegrees(lng, lat, DEVICE_HEIGHT),
           // emoji / 圆点统一走 billboard，描边色已烘焙进画布图标
           billboard: {
             image: new Cesium.ConstantProperty(url),
             width: new Cesium.ConstantProperty(size),
             height: new Cesium.ConstantProperty(size),
+            scale: markerScale(p.status),
             verticalOrigin: Cesium.VerticalOrigin.CENTER,
             horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
             disableDepthTestDistance: Number.POSITIVE_INFINITY
@@ -734,12 +750,16 @@ export function useCesiumTunnelMap(
   }
 
   function syncUndergroundReveal(v: Cesium.Viewer) {
+    if (modelRoaming.state.active) return
     const alpha = orthoAlphaNow()
-    const reveal = alpha < 0.62
+    const showContext = (options?.getBasemapEnabled?.() ?? true) || alpha > 0.02
+    // 未显示底图时彻底隐藏地球，避免不透明的地球底色遮住地下 BIM。
+    v.scene.globe.show = showContext
+    const reveal = showContext && alpha < 0.62 && !isScene2D(v)
     v.scene.globe.translucency.enabled = reveal
     if (reveal) {
-      v.scene.globe.translucency.frontFaceAlpha = Math.max(0.12, 0.85 - alpha * 0.75)
-      v.scene.globe.translucency.backFaceAlpha = 0.1
+      v.scene.globe.translucency.frontFaceAlpha = Math.min(0.55, 0.08 + alpha * 0.55)
+      v.scene.globe.translucency.backFaceAlpha = 0.04
     }
     v.scene.requestRender()
   }
@@ -791,6 +811,7 @@ export function useCesiumTunnelMap(
     const url = publicAssetUrl(relativePath)
     try {
       const tileset = await Cesium.Cesium3DTileset.fromUrl(url, { maximumScreenSpaceError })
+      if (v.isDestroyed() || viewer.value !== v) { tileset.destroy(); return null }
       ;(tileset as unknown as { __tunnelRole?: TilesetRole }).__tunnelRole = role
       v.scene.primitives.add(tileset)
       tunnelTilesets.push(tileset)
@@ -815,12 +836,6 @@ export function useCesiumTunnelMap(
     return Math.max(0.35, Math.min(1.45, b / 70))
   }
 
-  /** 0~1，供伪发光盒子 / Bloom 强度 */
-  function bimGlowIntensity(): number {
-    const b = options?.getBimBrightness?.() ?? 72
-    return Math.max(0.15, Math.min(1, b / 100))
-  }
-
   function obliqueAlphaNow(): number {
     const a = options?.getObliqueAlpha?.() ?? 0.35
     return Math.max(0, Math.min(1, a))
@@ -837,16 +852,16 @@ export function useCesiumTunnelMap(
   }
 
   function applyTilesetStyles(
-    preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'neon-tunnel')
+    preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'engineering')
   ) {
-    const glow = bimBrightnessFactor()
+    if (modelRoaming.state.active) return
+    const brightness = bimBrightnessFactor()
     const partialXray = options?.getPartialXray?.() ?? false
     const bimAlpha = bimOpacityNow()
     tunnelTilesets.forEach(ts => {
       const role = (ts as unknown as { __tunnelRole?: TilesetRole }).__tunnelRole
       if (role === 'bim') {
-        // 施工模型：保留原始材质（白=不染色），仅加透明度透视内部构造；
-        // 透明时整体提亮，配合 OBB 发光线框更显眼（见 refreshModelLocalFx）
+        // 施工模型以克制的半透明材质作上下文，视觉主体回归真实 BIM。
         ts.style = new Cesium.Cesium3DTileStyle({ color: `color('#ffffff', ${bimAlpha.toFixed(2)})` })
       } else if (role === 'partial') {
         // 竣工模型：仅「原始 / X光」两态，无透明度滑杆
@@ -867,23 +882,24 @@ export function useCesiumTunnelMap(
         const boost =
           (role === 'bim' && bimAlpha < 0.999) || (role === 'partial' && partialXray) ? 0.5 : 0
         try {
-          const s = 1.15 + glow * 0.35 + boost
+          const s = 0.85 + brightness * 0.25 + boost * 0.35
           ts.lightColor = new Cesium.Cartesian3(s, s, s)
           const ibl = ts.imageBasedLighting
           if (ibl) {
             ibl.imageBasedLightingFactor = new Cesium.Cartesian2(
-              Math.min(2.4, 1.2 + glow * 0.2 + boost),
-              1.0
+              Math.min(1.6, 0.85 + brightness * 0.15 + boost * 0.3),
+              0.8
             )
           }
         } catch {
           /* older Cesium */
         }
       }
+      ts.colorBlendMode = Cesium.Cesium3DTileColorBlendMode.HIGHLIGHT
+      ts.colorBlendAmount = role === 'partial' ? 0.14 : 0.08
       if (role === 'partial') ts.maximumScreenSpaceError = Math.min(ts.maximumScreenSpaceError, 4)
     })
     syncXrayMode()
-    refreshModelLocalFx(viewer.value)
   }
 
   /** 透视模式：施工透明 / 竣工 X光 时关闭对应模型背面剔除，便于透视内部构造 */
@@ -938,35 +954,11 @@ export function useCesiumTunnelMap(
     v.scene.requestRender()
   }
 
-  function refreshBimGlowShell(_v: Cesium.Viewer) {
-    // 伪发光盒已移除；两侧发光由 attachBimModelFocusFx 负责
-    glowShellDispose?.()
-    glowShellDispose = null
-  }
-
-  function setBimBrightness(_v: number) {
+  function setBimBrightness(_value: number) {
     const v = viewer.value
-    if (!v || v.isDestroyed()) return
+    if (!v || v.isDestroyed() || modelRoaming.state.active) return
     applyTilesetStyles()
-    const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'neon-tunnel')
-    const env = getSceneEnvironment(activeEnvironmentId)
-    const bloom = v.scene.postProcessStages.bloom
-    const g = bimBrightnessFactor()
-    const gi = bimGlowIntensity()
-    const bb = env.bloomBoost
-    v.scene.highDynamicRange = true
-    bloom.enabled = preset.bloom
-    bloom.uniforms.glowOnly = false
-    bloom.uniforms.contrast = (110 + gi * 160) * bb
-    bloom.uniforms.brightness = (-0.2 + gi * 0.38) * bb
-    bloom.uniforms.delta = 1.0 + gi * 0.7
-    bloom.uniforms.sigma = (2.8 + gi * 2.4) * bb
-    bloom.uniforms.stepSize = 1.15 + gi * 0.55
-    if (v.scene.light instanceof Cesium.DirectionalLight) {
-      v.scene.light.intensity = 2.4 * preset.ambientBoost * env.lightFactor * g
-    }
-    refreshModelLocalFx(v)
-    if (options?.getShowPartialTunnel?.() ?? true) refreshPartialRangeFx(v)
+    applyEnvironmentState(v, getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'engineering'))
     v.scene.requestRender()
   }
 
@@ -977,17 +969,14 @@ export function useCesiumTunnelMap(
       const existing = getBimTileset()
       if (show) {
         if (!existing) {
-          const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'neon-tunnel')
+          const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'engineering')
           await loadOneTileset(v, BIM_TILESET_PATH, preset.bimSse, 'bim')
         } else {
           existing.show = true
         }
         applyTilesetStyles()
-        refreshModelLocalFx(v)
       } else if (existing) {
         existing.show = false
-        modelFxDispose?.()
-        modelFxDispose = null
       }
       v.scene.requestRender()
     })()
@@ -1007,157 +996,9 @@ export function useCesiumTunnelMap(
     )
   }
 
-  /** 内部模型优先施工模型，否则竣工模型 */
+  /** 构件拾取优先竣工模型，确保能检视设备。 */
   function getInteriorTileset(): Cesium.Cesium3DTileset | null {
-    return getBimTileset() ?? getPartialTileset()
-  }
-
-  /* ==========================================================
-   * 第一人称：进入模型内部查看构造与设备
-   * ========================================================== */
-
-  async function setFirstPerson(active: boolean) {
-    const v = viewer.value
-    if (!v || isScene2D(v)) return
-    if (active) await enterFirstPerson(v)
-    else exitFirstPerson(v)
-  }
-
-  async function enterFirstPerson(v: Cesium.Viewer) {
-    let ts = getInteriorTileset()
-    if (!ts) {
-      await ensureTunnelTilesets(v)
-      ts = getInteriorTileset()
-    }
-    if (!ts) return
-    const frame = extractBimAxisFrame(ts)
-    if (!frame) return
-
-    fpFrame = frame
-    fpT = 0.5
-    fpFwd = false
-    fpBack = false
-
-    // 关闭背面剔除，使隧道内壁/内部设备从内部可见
-    fpRestoreCulling?.()
-    fpRestoreCulling = setTilesetBackFaceCulling(ts, false)
-
-    // 隐藏倾斜摄影背景，避免遮挡内部视野
-    fpObliqueShown.clear()
-    tunnelTilesets.forEach(t => {
-      const role = (t as unknown as { __tunnelRole?: TilesetRole }).__tunnelRole
-      if (role === 'oblique') {
-        fpObliqueShown.set(t, t.show)
-        t.show = false
-      }
-    })
-
-    fpPrevMinZoom = v.scene.screenSpaceCameraController.minimumZoomDistance
-    v.scene.screenSpaceCameraController.minimumZoomDistance = 1.0
-
-    const eye = bimInteriorEye(frame, fpT)
-    await v.camera.flyTo({
-      destination: eye.eye,
-      orientation: { heading: eye.heading, pitch: eye.pitch, roll: 0 },
-      duration: 1.2
-    })
-
-    firstPersonActive.value = true
-    fpKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null
-      if (
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      ) {
-        return
-      }
-      const k = e.key.toLowerCase()
-      if (k === 'w' || k === 'arrowup') {
-        fpFwd = true
-        e.preventDefault()
-      } else if (k === 's' || k === 'arrowdown') {
-        fpBack = true
-        e.preventDefault()
-      } else if (k === 'escape') {
-        void setFirstPerson(false)
-      }
-    }
-    fpKeyUp = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase()
-      if (k === 'w' || k === 'arrowup') fpFwd = false
-      else if (k === 's' || k === 'arrowdown') fpBack = false
-    }
-    window.addEventListener('keydown', fpKeyDown)
-    window.addEventListener('keyup', fpKeyUp)
-    fpPostRender = v.scene.postRender.addEventListener(fpStep)
-    v.scene.requestRender()
-  }
-
-  function fpStep() {
-    const v = viewer.value
-    if (!v || v.isDestroyed() || !fpFrame) return
-    let moved = false
-    const SPEED = 0.0018
-    if (fpFwd) {
-      fpT = Math.min(0.999, fpT + SPEED)
-      moved = true
-    }
-    if (fpBack) {
-      fpT = Math.max(0.001, fpT - SPEED)
-      moved = true
-    }
-    if (moved) {
-      const eye = bimInteriorEye(fpFrame, fpT)
-      // 保留用户拖拽旋转出的朝向，仅沿隧道中线平移
-      v.camera.setView({
-        destination: eye.eye,
-        orientation: { heading: v.camera.heading, pitch: v.camera.pitch, roll: v.camera.roll }
-      })
-    }
-  }
-
-  function exitFirstPerson(v: Cesium.Viewer) {
-    if (fpKeyDown) window.removeEventListener('keydown', fpKeyDown)
-    if (fpKeyUp) window.removeEventListener('keyup', fpKeyUp)
-    fpKeyDown = null
-    fpKeyUp = null
-    fpPostRender?.()
-    fpPostRender = null
-    fpFwd = false
-    fpBack = false
-    try {
-      fpRestoreCulling?.()
-    } catch {
-      /* ignore */
-    }
-    fpRestoreCulling = null
-    fpObliqueShown.forEach((show, t) => {
-      if (!t.isDestroyed()) t.show = show
-    })
-    fpObliqueShown.clear()
-    v.scene.screenSpaceCameraController.minimumZoomDistance = fpPrevMinZoom
-    firstPersonActive.value = false
-    fpFrame = null
-    v.scene.requestRender()
-    void resetMapView(0.8)
-  }
-
-  function refreshModelLocalFx(v: Cesium.Viewer | null) {
-    modelFxDispose?.()
-    modelFxDispose = null
-    if (!v || v.isDestroyed()) return
-    // 施工模型透明时：沿 OBB 绘制发光线框，让半透明模型更显眼（模型越透明越醒目）
-    const ts = getBimTileset()
-    if (!ts || ts.show === false) return
-    if (bimOpacityNow() < 0.999) {
-      const frame = extractBimAxisFrame(ts)
-      if (frame) modelFxDispose = attachBimGlowFrame(v, frame, { color: '#67e8f9' })
-    }
-  }
-
-  function refreshPartialRangeFx(_v: Cesium.Viewer) {
-    partialRangeDispose?.()
-    partialRangeDispose = null
+    return getPartialTileset() ?? getBimTileset()
   }
 
   /** 局部竣工显隐：优先 show 切换，避免重载完整施工模型 */
@@ -1167,29 +1008,22 @@ export function useCesiumTunnelMap(
     const existing = getPartialTileset()
     if (show) {
       if (!existing) {
-        const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'neon-tunnel')
+        const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'engineering')
         await loadOneTileset(v, PARTIAL_TUNNEL_TILESET_PATH, preset.partialSse, 'partial')
       } else {
         existing.show = true
       }
       applyTilesetStyles()
-      refreshPartialRangeFx(v)
     } else if (existing) {
       existing.show = false
-      partialRangeDispose?.()
-      partialRangeDispose = null
     }
-    refreshModelLocalFx(v)
     v.scene.requestRender()
   }
 
   function applyVisualEnvironment(v: Cesium.Viewer) {
-    const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'neon-tunnel')
+    const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'engineering')
     applyEnvironmentState(v, preset)
     applyTilesetStyles(preset)
-    const sphere = combinedTilesetSphere()
-    if (sphere) applyInteriorPointLight(v, sphere.center, 2.8 * preset.ambientBoost)
-    refreshModelLocalFx(v)
     syncUndergroundReveal(v)
     v.scene.requestRender()
   }
@@ -1197,7 +1031,6 @@ export function useCesiumTunnelMap(
   /** 应用「场景全局环境」：背景 / 昼夜 / 雾效 / 光照强度 / bloom 氛围 */
   function applyEnvironmentState(v: Cesium.Viewer, preset: SceneVisualPreset) {
     const env = getSceneEnvironment(activeEnvironmentId)
-    const gi = bimGlowIntensity()
 
     v.scene.backgroundColor = Cesium.Color.fromCssColorString(env.background)
     v.scene.globe.baseColor = Cesium.Color.fromCssColorString(env.globeBase)
@@ -1206,63 +1039,45 @@ export function useCesiumTunnelMap(
     v.scene.skyBox.show = false
     v.scene.globe.showGroundAtmosphere = false
     v.scene.globe.enableLighting = env.id !== 'default'
-
-    // 雾效（黄昏暖雾等）
     v.scene.fog.enabled = env.fog
     if (env.fog) {
       v.scene.fog.density = env.fogDensity
-      v.scene.fog.screenSpaceErrorFactor = 4.0
+      v.scene.fog.screenSpaceErrorFactor = 2
     }
-
-    v.scene.highDynamicRange = true
-    const baseIntensity = 2.85 * preset.ambientBoost * env.lightFactor
+    // 局部 ENU 方向光 + 中性环境光，保留设备原始材质与结构明暗。
+    const sphere = combinedTilesetSphere()
+    const direction = sphere
+      ? Cesium.Matrix4.multiplyByPointAsVector(Cesium.Transforms.eastNorthUpToFixedFrame(sphere.center), new Cesium.Cartesian3(-0.35, 0.25, -0.9), new Cesium.Cartesian3())
+      : new Cesium.Cartesian3(0.35, -0.45, -0.82)
     v.scene.light = new Cesium.DirectionalLight({
-      direction: new Cesium.Cartesian3(0.35, -0.45, -0.82),
-      intensity: baseIntensity
+      direction: Cesium.Cartesian3.normalize(direction, direction),
+      intensity: 1.65 * preset.ambientBoost * env.lightFactor * bimBrightnessFactor()
     })
-
+    v.scene.highDynamicRange = true
+    v.scene.postProcessStages.tonemapper = Cesium.Tonemapper.ACES
+    v.scene.postProcessStages.exposure = env.id === 'day' ? 1.05 : 1.12
     const bloom = v.scene.postProcessStages.bloom
     bloom.enabled = preset.bloom
-    if (preset.bloom) {
-      const bb = env.bloomBoost
-      bloom.uniforms.glowOnly = false
-      bloom.uniforms.contrast = (110 + gi * 160) * bb
-      bloom.uniforms.brightness = (-0.18 + gi * 0.35) * bb
-      bloom.uniforms.delta = 1.0 + gi * 0.7
-      bloom.uniforms.sigma = (2.6 + gi * 2.2) * bb
-      bloom.uniforms.stepSize = 1.15 + gi * 0.6
-    }
-
-    visualFxHandler?.()
-    visualFxHandler = null
-    if (preset.pulseLight) {
-      const envBloom = env.bloomBoost
-      visualFxHandler = v.scene.postRender.addEventListener(() => {
-        visualFxPhase += 0.018
-        const pulse = 0.92 + Math.sin(visualFxPhase) * 0.1
-        if (v.scene.light instanceof Cesium.DirectionalLight) {
-          v.scene.light.intensity = baseIntensity * pulse
-        }
-        if (preset.bloom) {
-          bloom.uniforms.brightness =
-            (-0.18 + gi * 0.35) * envBloom + Math.sin(visualFxPhase * 1.2) * 0.05
-        }
-      })
-    }
+    bloom.uniforms.glowOnly = false
+    bloom.uniforms.contrast = 64
+    bloom.uniforms.brightness = -0.3
+    bloom.uniforms.delta = 0.7
+    bloom.uniforms.sigma = 1.4
+    bloom.uniforms.stepSize = 0.5
   }
 
   function setSceneEnvironment(id: SceneEnvironmentId) {
     activeEnvironmentId = id
     const v = viewer.value
-    if (!v || v.isDestroyed() || isScene2D(v)) return
-    const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'neon-tunnel')
+    if (!v || v.isDestroyed() || isScene2D(v) || modelRoaming.state.active) return
+    const preset = getSceneVisualPreset(options?.getVisualPresetId?.() ?? 'engineering')
     applyEnvironmentState(v, preset)
     applyTilesetStyles(preset)
     v.scene.requestRender()
   }
 
   async function ensureTunnelTilesets(v: Cesium.Viewer, force = false): Promise<void> {
-    const presetId = options?.getVisualPresetId?.() ?? 'neon-tunnel'
+    const presetId = options?.getVisualPresetId?.() ?? 'engineering'
     const preset = getSceneVisualPreset(presetId)
     if (!force && tunnelTilesets.length && loadedPresetId === presetId) return
     if (tilesetsLoading) {
@@ -1289,9 +1104,9 @@ export function useCesiumTunnelMap(
         ) {
           await loadOneTileset(v, PARTIAL_TUNNEL_TILESET_PATH, preset.partialSse, 'partial')
         }
+        if (v.isDestroyed() || viewer.value !== v) return
         v.scene.globe.depthTestAgainstTerrain = true
         applyVisualEnvironment(v)
-        if (options?.getShowPartialTunnel?.() ?? true) refreshPartialRangeFx(v)
         try {
           setBimBrightness(options?.getBimBrightness?.() ?? 72)
         } catch (err) {
@@ -1321,7 +1136,7 @@ export function useCesiumTunnelMap(
     // 优先以隧道 BIM / 局部竣工为主体包围球，倾斜摄影不主导取景
     const primary = tunnelTilesets.filter(ts => {
       const role = (ts as unknown as { __tunnelRole?: TilesetRole }).__tunnelRole
-      return role === 'bim' || role === 'partial'
+      return ts.show && (role === 'bim' || role === 'partial')
     })
     const list = primary.length ? primary : tunnelTilesets
     let out = Cesium.BoundingSphere.clone(list[0].boundingSphere, new Cesium.BoundingSphere())
@@ -1332,14 +1147,16 @@ export function useCesiumTunnelMap(
   }
 
   async function flyToTilesetFocus(v: Cesium.Viewer, duration = 0.8) {
-    const sphere = combinedTilesetSphere()
+    // 默认聚焦带真实设备的竣工段；完整施工模型仍作为空间上下文保留。
+    const partial = getPartialTileset()
+    const sphere = partial?.show ? partial.boundingSphere : combinedTilesetSphere()
     if (sphere) {
       await v.camera.flyToBoundingSphere(sphere, {
         duration,
         offset: new Cesium.HeadingPitchRange(
-          Cesium.Math.toRadians(25),
-          Cesium.Math.toRadians(-38),
-          Math.max(sphere.radius * 2.2, 80)
+          Cesium.Math.toRadians(-25),
+          Cesium.Math.toRadians(-32),
+          Math.max(sphere.radius * 2.0, 40)
         )
       })
       return
@@ -1381,7 +1198,8 @@ export function useCesiumTunnelMap(
     }
 
     tunnelTilesets.forEach(ts => {
-      ts.show = !is2d
+      const role = (ts as unknown as { __tunnelRole?: TilesetRole }).__tunnelRole
+      ts.show = !is2d && (role === 'bim' ? (options?.getShowFullTunnel?.() ?? true) : role === 'partial' ? (options?.getShowPartialTunnel?.() ?? true) : true)
     })
     if (!is2d && tunnelTilesets.length === 0) {
       void ensureTunnelTilesets(v).then(() => {
@@ -1397,29 +1215,19 @@ export function useCesiumTunnelMap(
 
   async function applyViewMode(mode: MapViewMode) {
     const v = viewer.value
-    if (!v) return
-    // 以场景实际模式为准，而非 viewMode 变量（mount 竞态下二者可能不同步）
-    const isCurrently3D = v.scene.mode !== Cesium.SceneMode.SCENE2D
-    if ((mode === '3d') === isCurrently3D) return
-    viewMode.value = mode
-    /**
-     * 维度切换：先启动 morph 动画，再同步 scene.mode。
-     * 坑点：morphTo2D/3D 只驱动投影过渡，不会把 scene.mode 写回新值，
-     * 若不显式同步，后续所有依赖 scene.mode 的判断（含去重守卫）都会误判，
-     * 表现为「切三维无反应」或被立刻切回。
-     * 顺序也不能反：先设 mode 再调 morph，morph 会因模式已就绪而跳过动画。
-     */
-    if (mode === '3d') {
-      const done = v.scene.morphTo3D(1.0)
-      v.scene.mode = Cesium.SceneMode.SCENE3D
-      await done
-    } else {
-      const done = v.scene.morphTo2D(1.0)
-      v.scene.mode = Cesium.SceneMode.SCENE2D
-      await done
-    }
+    if (!v || v.isDestroyed()) return
+    v.camera.cancelFlight()
+    if (v.scene.mode === Cesium.SceneMode.MORPHING) v.scene.completeMorph()
+    const target = mode === '3d' ? Cesium.SceneMode.SCENE3D : Cesium.SceneMode.SCENE2D
+    if (v.scene.mode === target) return
+    // 使用公开的零时长投影切换，让 Cesium 同步重建正确视锥；
+    // 再平滑定位局部场景，避免地下 BIM 先飞到全球尺度，也避免快速切换竞态。
+    if (mode === '3d') v.scene.morphTo3D(0)
+    else v.scene.morphTo2D(0)
+    if (v.isDestroyed() || viewer.value !== v || viewMode.value !== mode) return
     applyPresentationMode()
-    await resetMapView(0.6)
+    syncUndergroundReveal(v)
+    await resetMapView(motionQuery.matches ? 0 : 0.6)
   }
 
   function clearFeatureHighlight() {
@@ -1470,7 +1278,8 @@ export function useCesiumTunnelMap(
       properties['纬度'] = Cesium.Math.toDegrees(c.latitude).toFixed(6)
       properties['高程(m)'] = c.height.toFixed(2)
     }
-    const title =
+    const featureName = feature?.getProperty('name') ?? feature?.getProperty('名称')
+    const title = featureName ? String(featureName) :
       role === 'bim'
         ? '完整施工模型'
         : role === 'partial'
@@ -1542,9 +1351,10 @@ export function useCesiumTunnelMap(
     const handler = new Cesium.ScreenSpaceEventHandler(v.scene.canvas)
     handler.setInputAction((movement: { position: Cesium.Cartesian2 }) => {
       // drillPick 由近到远；取「最近」的设备或构件，禁止落到最底层
-      const candidates = v.scene.drillPick(movement.position, 128)
+      const candidates = v.scene.drillPick(movement.position, modelRoaming.state.active ? 32 : 8)
       let deviceId: string | undefined
       let tileFeature: Cesium.Cesium3DTileFeature | undefined
+      let structuralFeature: Cesium.Cesium3DTileFeature | undefined
       for (const c of candidates) {
         const id = (c.id as unknown as { __deviceId?: string } | undefined)?.__deviceId
         if (id) {
@@ -1552,8 +1362,9 @@ export function useCesiumTunnelMap(
           break
         }
         if (c instanceof Cesium.Cesium3DTileFeature) {
-          tileFeature = c
-          break
+          const isEquipment = modelRoaming.equipment.value.some(e => e.id === String(c.getProperty('id') ?? ''))
+          if (!modelRoaming.state.active || isEquipment) { tileFeature = c; break }
+          structuralFeature ??= c
         }
       }
       if (deviceId) {
@@ -1561,13 +1372,16 @@ export function useCesiumTunnelMap(
         if (p) void focusDevice(p)
         return
       }
+      tileFeature ??= structuralFeature
       const pickedTileset = tileFeature
         ? (tileFeature.tileset as Cesium.Cesium3DTileset | undefined)
         : undefined
       if (tileFeature || pickedTileset) {
+        if (modelRoaming.state.active && tileFeature) modelRoaming.selectPickedEquipment(String(tileFeature.getProperty('id') ?? ''))
         if (tileFeature) highlightTilesetPick(tileFeature)
-        const pos =
-          v.scene.pickPosition(movement.position) ||
+        const equipment = tileFeature ? modelRoaming.equipment.value.find(e => e.id === String(tileFeature!.getProperty('id') ?? '')) : undefined
+        const pos = (equipment ? new Cesium.Cartesian3(...equipment.center) : undefined) ||
+          (v.scene.pickPositionSupported ? v.scene.pickPosition(movement.position) : undefined) ||
           (() => {
             const bs = getInteriorTileset()?.boundingSphere
             return bs ? bs.center : undefined
@@ -1604,6 +1418,7 @@ export function useCesiumTunnelMap(
   async function mount(mode: BasemapMode, initialViewMode: MapViewMode = '3d') {
     if (!containerRef.value) return
     await destroy()
+    const version = lifecycleVersion
 
     const isReality = mode === 'reality'
     activeBasemapMode = mode
@@ -1611,7 +1426,9 @@ export function useCesiumTunnelMap(
     viewMode.value = initialViewMode === '2d' ? '2d' : '3d'
     basemapTileMode = mode === 'vector' ? 'vector' : 'satellite'
     const route = await loadTunnelRoute()
+    if (version !== lifecycleVersion || !containerRef.value) return
     routeData.value = route
+    activeEnvironmentId = options?.getSceneEnvironmentId?.() ?? 'default'
 
     // 版权容器：天地图/高德要求保留署名，低调显示在容器左下角
     const creditHost = document.createElement('div')
@@ -1639,7 +1456,7 @@ export function useCesiumTunnelMap(
       }
     })
 
-    // 场景氛围：提亮深蓝底，配合 BIM 霓虹发光
+    // 深蓝工程展示底色；不再绘制模型包围盒或发光线框。
     v.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a1a38')
     v.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0c2248')
     v.scene.skyBox.show = false
@@ -1648,10 +1465,22 @@ export function useCesiumTunnelMap(
     v.scene.fog.enabled = false
     v.scene.globe.showGroundAtmosphere = false
     v.scene.globe.depthTestAgainstTerrain = false
-    v.scene.screenSpaceCameraController.minimumZoomDistance = 60
-    v.scene.screenSpaceCameraController.maximumZoomDistance = 60000
+    // 不再钳制近景/远景；关闭地形和模型碰撞才能穿入地下构件。
+    v.scene.screenSpaceCameraController.minimumZoomDistance = 0
+    v.scene.screenSpaceCameraController.maximumZoomDistance = Number.POSITIVE_INFINITY
+    v.scene.screenSpaceCameraController.enableCollisionDetection = false
     v.scene.highDynamicRange = true
     v.scene.msaaSamples = 4
+    v.scene.postProcessStages.fxaa.enabled = true
+    v.useBrowserRecommendedResolution = false
+    v.resolutionScale = Math.min(window.devicePixelRatio || 1, 1.5) / (window.devicePixelRatio || 1)
+    v.targetFrameRate = 45
+    const ao = v.scene.postProcessStages.ambientOcclusion
+    ao.enabled = Cesium.PostProcessStageLibrary.isAmbientOcclusionSupported(v.scene)
+    ao.uniforms.intensity = 1.2
+    ao.uniforms.lengthCap = 0.12
+    ao.uniforms.stepSize = 1.0
+    ao.uniforms.blurStepSize = 1.0
 
     viewer.value = v
 
@@ -1676,14 +1505,14 @@ export function useCesiumTunnelMap(
     bindClick(v)
 
     // 初始维度
-    if (initialViewMode === '2d') v.scene.mode = Cesium.SceneMode.SCENE2D
-    else v.scene.mode = Cesium.SceneMode.SCENE3D
+    if (initialViewMode === '2d') v.scene.morphTo2D(0)
 
     syncDeviceGraphics()
     applyPresentationMode()
     try {
       if (initialViewMode !== '2d') {
         await ensureTunnelTilesets(v)
+        if (version !== lifecycleVersion || v.isDestroyed() || viewer.value !== v) return
         applyPresentationMode()
         await flyToTilesetFocus(v, 0)
       } else {
@@ -1700,6 +1529,8 @@ export function useCesiumTunnelMap(
       console.warn('[tunnel] mount 后期初始化失败，界面仍可用', err)
     }
 
+    if (version !== lifecycleVersion || v.isDestroyed() || viewer.value !== v) return
+
     // 开发期调试钩子：便于在控制台检查相机/图层状态
     if (import.meta.env.DEV) {
       ;(window as unknown as { __tunnelCesium?: unknown }).__tunnelCesium = {
@@ -1707,7 +1538,9 @@ export function useCesiumTunnelMap(
         routeEntities,
         flowEntities,
         arrowEntities,
-        deviceEntities
+        deviceEntities,
+        modelRoaming,
+        setViewMode
       }
     }
 
@@ -1715,6 +1548,7 @@ export function useCesiumTunnelMap(
   }
 
   async function setViewMode(mode: MapViewMode) {
+    if (modelRoaming.state.active || modelRoaming.state.loading) modelRoaming.stop(false)
     viewMode.value = mode
     const v = viewer.value
     // viewer 尚未就绪时只记录意图，mount 完成后会依据标记补应用，
@@ -1724,8 +1558,8 @@ export function useCesiumTunnelMap(
       return
     }
     // 以场景真实状态判断，避免重复 morph
-    const isCurrently3D = v.scene.mode !== Cesium.SceneMode.SCENE2D
-    if ((mode === '3d') === isCurrently3D) return
+    const target = mode === '3d' ? Cesium.SceneMode.SCENE3D : Cesium.SceneMode.SCENE2D
+    if (v.scene.mode === target) return
     const seq = ++viewSwitchSeq
     await applyViewMode(mode)
     if (seq !== viewSwitchSeq) return
@@ -1766,27 +1600,12 @@ export function useCesiumTunnelMap(
   }
 
   async function destroy() {
+    lifecycleVersion++
     ready.value = false
     focusedDeviceId = null
     activeEnvironmentId = 'default'
     stopFlowLoop()
-    // 若处于第一人称，先退出（移除监听、恢复背面剔除与倾斜摄影）
-    if (firstPersonActive.value) {
-      firstPersonActive.value = false
-      if (fpKeyDown) window.removeEventListener('keydown', fpKeyDown)
-      if (fpKeyUp) window.removeEventListener('keyup', fpKeyUp)
-      fpKeyDown = null
-      fpKeyUp = null
-      fpPostRender?.()
-      fpPostRender = null
-      try {
-        fpRestoreCulling?.()
-      } catch {
-        /* ignore */
-      }
-      fpRestoreCulling = null
-      fpFrame = null
-    }
+    modelRoaming.stop(false)
     // 还原所有 X光 背面剔除
     xrayRestoresMap.forEach(restore => {
       try {
@@ -1799,16 +1618,8 @@ export function useCesiumTunnelMap(
     clearFeatureHighlight()
     clickPulseDispose?.()
     clickPulseDispose = null
-    modelFxDispose?.()
-    modelFxDispose = null
-    glowShellDispose?.()
-    glowShellDispose = null
-    partialRangeDispose?.()
-    partialRangeDispose = null
     moveHandler?.()
     moveHandler = null
-    visualFxHandler?.()
-    visualFxHandler = null
     closeFloatingPopup()
     routeEntities = []
     flowEntities = []
@@ -1819,6 +1630,7 @@ export function useCesiumTunnelMap(
     const v = viewer.value
     viewer.value = null
     if (v && !v.isDestroyed()) {
+      if (v.scene.mode === Cesium.SceneMode.MORPHING) v.scene.completeMorph()
       detachAllTunnelTilesets(v)
       clickHandlers.get(v)?.destroy()
       clickHandlers.delete(v)
@@ -1853,8 +1665,23 @@ export function useCesiumTunnelMap(
     setBimOpacity,
     setPartialOpacity,
     setPartialXray,
-    setFirstPerson,
-    firstPersonActive,
+    roaming: modelRoaming.state,
+    roamEquipment: modelRoaming.equipment,
+    startRoaming: modelRoaming.start,
+    stopRoaming: modelRoaming.stop,
+    toggleRoamingPlayback: modelRoaming.togglePlay,
+    seekRoaming: modelRoaming.seek,
+    reverseRoaming: modelRoaming.reverse,
+    setRoamingLayer: modelRoaming.setLayer,
+    setRoamingEyeHeight: modelRoaming.setEyeHeight,
+    setRoamingLateralOffset: modelRoaming.setLateralOffset,
+    setRoamingDimStructure: modelRoaming.setDimStructure,
+    inspectRoamingEquipment: modelRoaming.inspectEquipment,
+    focusDeviceById: (id: string) => {
+      if (modelRoaming.state.active) modelRoaming.stop(false)
+      const point = getDevices().find(p => p.id === id)
+      if (point) void focusDevice(point)
+    },
     setSceneEnvironment,
     resetMapView,
     destroy,

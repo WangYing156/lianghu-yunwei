@@ -1,6 +1,6 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 
-const routes = [
+const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/overview' },
   { path: '/overview', component: () => import('./views/Overview.vue'), meta: { title: '总览' } },
   { path: '/traffic', component: () => import('./views/Traffic.vue'), meta: { title: '智能交通' } },

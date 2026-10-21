@@ -49,12 +49,7 @@
       </div>
     </header>
 
-    <!-- 告警滚动横幅 -->
-    <div class="alarm-ticker" v-if="route.path === '/overview' || route.path === '/emergency' || route.path === '/monitoring'">
-      <span class="tk-icon">⚠️</span>
-      <span class="tk-text">【积涝黄色预警】K3+050 积水监测点 1h 降雨量 15.9mm，达内涝警戒值，请加强巡查并预置排涝设备</span>
-      <span class="tk-time">30s 后刷新</span>
-    </div>
+    <AlertTicker v-if="['/overview', '/emergency', '/monitoring'].includes(route.path)" :items="DEMO_ALERTS" />
 
     <!-- 主内容（全屏场景） -->
     <main class="main">
@@ -101,6 +96,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePrd, type PrdDoc } from './prd'
 import { ElMessage } from 'element-plus'
+import AlertTicker from './components/AlertTicker.vue'
+import { DEMO_ALERTS } from './config/alerts'
 
 const route = useRoute()
 const router = useRouter()
@@ -121,7 +118,7 @@ let timer: number | undefined
 function tick() {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
-  nowStr.value = `2026.10.18  ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  nowStr.value = `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())}  ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 onMounted(() => { tick(); timer = window.setInterval(tick, 1000) })
 onBeforeUnmount(() => clearInterval(timer))
@@ -167,13 +164,14 @@ function save() {
 
 /* ===== 顶部标题栏 ===== */
 .topbar {
-  height: 64px;
+  height: 88px;
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 42px 34px;
   align-items: center;
-  justify-content: center;
-  gap: 18px;
-  padding: 0 20px;
+  gap: 0 8px;
+  padding: 0 20px 10px;
   position: relative;
   background: linear-gradient(180deg, rgba(14, 50, 120, 0.9) 0%, rgba(8, 30, 70, 0.95) 100%);
   border-bottom: 1px solid rgba(78, 160, 255, 0.35);
@@ -192,29 +190,31 @@ function save() {
 
 /* 标题居中，两侧导航 */
 .title-block {
-  flex: none;
+  grid-column: 1 / -1; grid-row: 1; justify-self: center;
   position: relative;
   padding: 0 18px;
   white-space: nowrap;
 }
 .sys-name {
-  font-size: 24px; font-weight: 800; letter-spacing: 4px;
+  font-size: 22px; font-weight: 700; letter-spacing: 3px;
   background: linear-gradient(180deg, #ffffff 30%, #8fd0ff 100%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
   text-shadow: 0 0 16px rgba(78, 180, 255, 0.4);
 }
 
 /* 导航 */
-.tb-nav { flex: none; display: flex; gap: 6px; }
+.tb-nav { display: flex; gap: 6px; }
+.nav-left { grid-column: 1; grid-row: 2; justify-self: end; }
+.nav-right { grid-column: 2; grid-row: 2; justify-self: start; }
 .tb-tools {
-  flex: none; position: absolute; right: 20px;
+  position: absolute; right: 20px; top: 10px;
   display: flex; align-items: center; gap: 14px;
 }
 .nav-item {
   position: relative;
   display: flex; align-items: center; gap: 6px;
-  padding: 8px 18px;
-  font-size: 15px; font-weight: 600; letter-spacing: 1px;
+  padding: 7px 14px;
+  font-size: 13px; font-weight: 500; letter-spacing: 1px;
   color: #9cc0ee;
   cursor: pointer;
   clip-path: polygon(10px 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
@@ -244,22 +244,8 @@ function save() {
   --el-button-border-color: rgba(78, 160, 255, 0.5);
 }
 
-/* ===== 告警滚动横幅 ===== */
-.alarm-ticker {
-  flex: none;
-  margin: 10px 16px 0;
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #ffe3b8;
-  background: linear-gradient(90deg, rgba(120, 60, 10, 0.55) 0%, rgba(60, 35, 10, 0.45) 60%, rgba(60, 35, 10, 0.1) 100%);
-  border: 1px solid rgba(255, 170, 60, 0.45);
-  box-shadow: 0 0 14px rgba(255, 150, 40, 0.18);
-  .tk-icon { filter: drop-shadow(0 0 4px rgba(255, 170, 40, 0.8)); }
-  .tk-text { flex: 1; letter-spacing: 0.5px; }
-  .tk-time { font-size: 11px; color: #d9a05a; }
-}
+@media (max-width: 1600px) { .datetime { display: none; } .sys-name { font-size: 20px; } }
+@media (max-width: 1000px) { .topbar { padding-left: 8px; padding-right: 8px; } .nav-item { font-size: 11px; padding: 7px 9px; } .tb-tools { right: 10px; gap: 6px; } .view-toggle { display: none; } .sys-name { font-size: 17px; letter-spacing: 1px; } }
 
 /* ===== 主内容 ===== */
 .main {

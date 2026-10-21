@@ -418,3 +418,13 @@
 }
 
 /* 地图设备详情：TunnelScene 内 .map-floating-popup + .pd-shell，不再使用 Esri Popup */
+
+/* 内部巡游时收起两侧业务遮罩，让设备成为视觉主体。 */
+.map-layout-full:has(.tunnel-scene.is-roaming),
+.map-layout-full:has(.tunnel-scene.is-expanded) {
+  &::before, &::after { opacity: 0; }
+  > .map-side-rail, > .asset-side, .ctx-hint { opacity: 0; pointer-events: none; visibility: hidden; }
+}
+.map-side-rail, .asset-side { transition: opacity .3s ease; }
+.roam-equipment-pop { max-width: min(500px, calc(100vw - 30px)); }
+@media (prefers-reduced-motion: reduce) { .map-side-rail, .asset-side { transition: none; } }

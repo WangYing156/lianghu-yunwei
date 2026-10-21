@@ -6,7 +6,7 @@ function stakeToProgress(stake: string): number | null {
   return TUNNEL_STATION_INVERT ? 1 - t : t
 }
 
-export const TUNNEL_GEOJSON_URL = '/geojson/两湖隧道.geojson'
+export const TUNNEL_GEOJSON_URL = `${import.meta.env.BASE_URL || '/'}geojson/两湖隧道.geojson`
 
 export type LngLat = [number, number]
 
@@ -101,6 +101,7 @@ export function loadTunnelRoute(): Promise<TunnelRouteData> {
         return res.json()
       })
       .then(buildFromGeoJson)
+      .catch(error => { cache = null; throw error })
   }
   return cache
 }

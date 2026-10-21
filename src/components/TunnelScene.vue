@@ -1,5 +1,6 @@
 <template>
-  <div class="tunnel-scene" :style="{ height: sceneStyleHeight }">
+  <Teleport to="body" :disabled="!expanded">
+  <div class="tunnel-scene" :class="{ 'is-roaming': roaming.active, 'is-expanded': expanded }" :style="{ height: sceneStyleHeight }">
     <!-- 三维隧道透视场景（铺满） -->
     <div class="scene-viewport" :class="{ focused: focusedId, 'map-mode': true }" :style="{ '--fx': focusOrigin.x, '--fy': focusOrigin.y }">
       <!-- Cesium：影像/矢量底图 + 本地 3D Tiles 实景模型 -->
@@ -50,124 +51,55 @@
         </div>
       </div>
       <div v-if="!mapReady" class="map-loading-mask">
-        <span class="ml-spinner"></span>
-        <span>{{ basemap === 'reality' ? '实景三维模型加载中…' : '地图场景加载中…' }}</span>
+        <span v-if="!mapError" class="ml-spinner"></span>
+        <span>{{ mapError || (basemap === 'reality' ? '实景三维模型加载中…' : '地图场景加载中…') }}</span>
+        <button v-if="mapError" type="button" class="map-retry" @click="initializeMap">重新加载</button>
       </div>
 
       <div class="map-vignette" aria-hidden="true"></div>
-      <div class="scene-tag">
-        <span class="st-dot"></span>{{ sceneTag }}
-      </div>
+      <Transition name="scene-panel">
+        <ModelRoamingPanel
+          v-if="roaming.active || roaming.loading || roaming.error"
+          :state="roaming" :equipment="roamEquipment"
+          @start="toggleRoaming" @exit="stopRoaming" @play="toggleRoamingPlayback"
+          @seek="seekRoaming" @reverse="reverseRoaming" @speed="roaming.speed = $event"
+          @layer="setRoamingLayer" @height="setRoamingEyeHeight" @offset="setRoamingLateralOffset"
+          @dim="setRoamingDimStructure" @equipment="inspectRoamingEquipment"
+        />
+      </Transition>
 
-      <!-- 第一人称漫游提示 -->
-      <div v-if="firstPersonActive" class="fp-hud">
-        <span class="fp-hud__title">👁 第一人称漫游</span>
-        <span class="fp-hud__keys">W / S 前进后退 · 拖拽查看 · Esc 退出</span>
-      </div>
-
-      <!-- 底部场景工具栏 -->
-      <div class="scene-toolbar scene-toolbar--float">
-        <div class="tb-row tb-row--layers">
-          <span class="tb-label">图层</span>
-          <template v-for="g in layerGroups" :key="g.key">
-            <el-popover :width="300" trigger="click" placement="top" popper-class="layer-pop">
-              <template #reference>
-                <button type="button" class="layer-chip" :class="{ on: g.on }" @click.prevent>
-                  <span class="chip-dot" :style="{ background: g.color }"></span>
-                  <span class="chip-name">{{ g.name }}</span>
-                  <span class="chip-count">{{ activeCount(g) }}/{{ g.all.length }}</span>
-                </button>
-              </template>
-              <div class="layer-group-title">
-                <span>{{ g.name }}</span>
-                <el-switch v-model="g.on" size="small" class="group-switch" />
-              </div>
-              <div class="layer-actions">
-                <button type="button" class="la-btn" @click="selectAllInGroup(g)">全选</button>
-                <button type="button" class="la-btn" @click="clearGroupItems(g)">清空</button>
-              </div>
-              <div v-if="g.key === 'structure'" class="basemap-switch">
-                <div class="bm-title">底图模式</div>
-                <el-radio-group v-model="basemap" size="small">
-                  <el-radio-button value="satellite">卫星</el-radio-button>
-                  <el-radio-button value="vector">矢量</el-radio-button>
-                  <el-radio-button value="reality">实景三维</el-radio-button>
-                </el-radio-group>
-              </div>
-              <div v-if="g.key === 'structure'" class="map-scene-layers">
-                <div class="bm-title">视图</div>
-                <el-radio-group v-model="mapViewMode" size="small" :disabled="!mapReady">
-                  <el-radio-button value="3d">三维</el-radio-button>
-                  <el-radio-button value="2d">二维</el-radio-button>
-                </el-radio-group>
-                <p class="bm-hint">主体：两湖隧道模型；倾斜摄影作背景参照</p>
-                <el-checkbox v-model="basemapEnabled" size="small">显示底图</el-checkbox>
-                <el-checkbox v-model="showFullTunnel" size="small">完整施工模型</el-checkbox>
-                <el-checkbox v-model="showPartialTunnel" size="small">局部竣工模型</el-checkbox>
-                <div class="bm-title">正射透明度（↓更突出隧道）</div>
-                <el-slider v-model="orthophotoAlpha" :min="0" :max="100" :format-tooltip="pctTip" size="small" />
-                <div class="bm-title">倾斜摄影透明度（↑更实）</div>
-                <el-slider v-model="obliqueAlpha" :min="0" :max="100" :format-tooltip="pctTip" size="small" />
-                <div class="bm-title">BIM 发光亮度</div>
-                <el-slider v-model="bimBrightness" :min="20" :max="100" :format-tooltip="pctTip" size="small" />
-                <div class="bm-title">施工模型透明度</div>
-                <el-slider v-model="bimOpacity" :min="10" :max="100" :format-tooltip="pctTip" size="small" />
-                <div class="bm-title">竣工模型显示</div>
-                <el-radio-group v-model="partialXray" size="small" class="preset-group">
-                  <el-radio-button :value="false">原始</el-radio-button>
-                  <el-radio-button :value="true">X光</el-radio-button>
-                </el-radio-group>
-                <div class="bm-title">场景环境</div>
-                <el-radio-group v-model="sceneEnvironment" size="small" class="env-group">
-                  <el-radio-button v-for="e in SCENE_ENVIRONMENTS" :key="e.id" :value="e.id">
-                    {{ e.icon }} {{ e.label }}
-                  </el-radio-button>
-                </el-radio-group>
-                <p class="bm-hint env-desc">{{ activeEnvDesc }}</p>
-              </div>
-              <el-checkbox-group v-model="g.items">
-                <div v-for="it in g.all" :key="it.key" class="layer-check">
-                  <el-checkbox :value="it.key" size="small">
-                    <span class="lc-dot" :style="{ background: it.color }"></span>{{ it.name }}
-                  </el-checkbox>
-                </div>
-              </el-checkbox-group>
-            </el-popover>
-          </template>
-        </div>
-
-        <div class="tb-divider" aria-hidden="true"></div>
-
-        <div class="tb-row tb-row--tools">
-          <span class="tb-label">交互</span>
-          <button type="button" class="tb-act tb-act--ghost" :disabled="!mapReady" @click="onResetView">
-            <span class="tb-act__icon">⌂</span>
-            <span class="tb-act__txt">复位</span>
-          </button>
-          <button
-            type="button"
-            class="tb-act"
-            :class="{ on: firstPersonActive }"
-            :disabled="!mapReady || mapViewMode !== '3d'"
-            @click="toggleFirstPerson"
-          >
-            <span class="tb-act__icon">👁</span>
-            <span class="tb-act__txt">{{ firstPersonActive ? '退出内部' : '第一人称' }}</span>
-          </button>
-        </div>
-
-        <div v-if="showFullTunnel || showPartialTunnel" class="tb-row tb-row--status">
-          <span v-if="showFullTunnel || showPartialTunnel" class="tb-legend">
-            <i v-if="showFullTunnel" class="lg bim"></i><template v-if="showFullTunnel">施工</template>
-            <i v-if="showPartialTunnel" class="lg partial"></i><template v-if="showPartialTunnel">竣工</template>
-          </span>
-        </div>
+      <!-- 轻量场景 Dock：高级选项默认折叠，保留模型的展示空间 -->
+      <div class="scene-toolbar scene-toolbar--float" aria-label="三维场景工具栏" @pointerdown.stop>
+        <el-popover :width="320" trigger="click" placement="top" popper-class="layer-pop" :disabled="roaming.active">
+          <template #reference><button type="button" class="tb-act" :disabled="roaming.active"><el-icon><Collection /></el-icon><span>图层</span></button></template>
+          <div class="layer-group-title">业务点位图层 <small>按需显示</small></div>
+          <el-collapse v-model="openLayerGroups" class="layer-collapse">
+            <el-collapse-item v-for="g in layerGroups" :key="g.key" :name="g.key">
+              <template #title><span class="layer-group-name"><i :style="{ background: g.color }"></i>{{ g.name }}<small>{{ activeCount(g) }} / {{ g.all.length }}</small></span></template>
+              <div class="layer-actions"><el-switch v-model="g.on" size="small" active-text="显示" /><button type="button" class="la-btn" @click="selectAllInGroup(g)">全选</button><button type="button" class="la-btn" @click="clearGroupItems(g)">清空</button></div>
+              <el-checkbox-group v-model="g.items"><div v-for="item in g.all" :key="item.key" class="layer-check"><el-checkbox :value="item.key" size="small"><span class="lc-dot" :style="{ background: item.color }"></span>{{ item.name }}</el-checkbox></div></el-checkbox-group>
+            </el-collapse-item>
+          </el-collapse>
+        </el-popover>
+        <SceneSettings
+          :ready="mapReady" :disabled="roaming.active || roaming.loading"
+          v-model:basemap="basemap" v-model:view-mode="mapViewMode" v-model:basemap-enabled="basemapEnabled"
+          v-model:orthophoto-alpha="orthophotoAlpha" v-model:oblique-alpha="obliqueAlpha"
+          v-model:show-full-tunnel="showFullTunnel" v-model:show-partial-tunnel="showPartialTunnel"
+          v-model:bim-opacity="bimOpacity" v-model:bim-brightness="bimBrightness"
+          v-model:partial-xray="partialXray" v-model:environment="sceneEnvironment"
+        />
+        <span class="tb-divider" aria-hidden="true"></span>
+        <button type="button" class="tb-act tb-act--primary" :class="{ on: roaming.active }" :disabled="!mapReady || mapViewMode !== '3d'" :title="mapViewMode !== '3d' ? '请先在场景设置中切换三维视图' : '沿竣工模型真实路面巡游，检视内部设备'" @click="toggleRoaming"><el-icon><Guide /></el-icon><span>{{ roaming.active ? '退出巡游' : '内部巡游' }}</span></button>
+        <button type="button" class="tb-act tb-act--icon" :title="expanded ? '退出大图' : '放大场景'" :aria-label="expanded ? '退出大图' : '放大场景'" :aria-pressed="expanded" @click="expanded = !expanded"><el-icon><FullScreen /></el-icon></button>
+        <button type="button" class="tb-act tb-act--icon" :disabled="!mapReady" title="复位视角" aria-label="复位视角" @click="onResetView"><el-icon><RefreshRight /></el-icon></button>
+        <span class="tb-legend" aria-label="模型图例"><i v-if="showFullTunnel" class="bim"></i><span v-if="showFullTunnel">施工</span><i v-if="showPartialTunnel" class="partial"></i><span v-if="showPartialTunnel">竣工</span></span>
       </div>
     </div>
 
     <!-- 可拖拽调高把手 -->
     <div
-      v-if="resizable"
+      v-if="resizable && !expanded"
       class="resize-handle"
       @mousedown="startResize"
       @dblclick.prevent="toggleResizeHeight"
@@ -231,11 +163,15 @@
       </div>
     </el-dialog>
   </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import VChart from './VChart.vue'
+import SceneSettings from './SceneSettings.vue'
+import ModelRoamingPanel from './ModelRoamingPanel.vue'
+import { Collection, FullScreen, Guide, RefreshRight } from '@element-plus/icons-vue'
 import { useCesiumTunnelMap, type ModelPickInfo } from '../composables/useCesiumTunnelMap'
 import { loadTunnelRoute, progressOnRoute } from '../utils/tunnelRouteLoader'
 import type { MapDevicePoint } from '../composables/useCesiumTunnelMap'
@@ -243,7 +179,7 @@ import {
   getSceneVisualPreset,
   type SceneVisualPresetId
 } from '../config/sceneVisualPresets'
-import { SCENE_ENVIRONMENTS, type SceneEnvironmentId } from '../config/sceneEnvironment'
+import { type SceneEnvironmentId } from '../config/sceneEnvironment'
 import { createMapPopupElement, disposeMapPopupChart, mountMapPopupChart } from '../utils/mapPopupContent'
 
 export type PointKind =
@@ -298,18 +234,19 @@ const emit = defineEmits<{ (e: 'contextmenu', point: ScenePoint): void; (e: 'sel
 const basemap = ref<'satellite' | 'vector' | 'reality'>('reality')
 const mapViewMode = ref<'2d' | '3d'>('3d')
 const sceneVisualPreset = ref<SceneVisualPresetId>('engineering')
-const orthophotoAlpha = ref(20)
-const obliqueAlpha = ref(35)
+const orthophotoAlpha = ref(0)
+const obliqueAlpha = ref(22)
 const sceneEnvironment = ref<SceneEnvironmentId>('default')
 const basemapEnabled = ref(false)
 const showFullTunnel = ref(true)
 const showPartialTunnel = ref(true)
-const bimBrightness = ref(88)
+const bimBrightness = ref(72)
 const _initPreset = getSceneVisualPreset(sceneVisualPreset.value)
 const bimOpacity = ref(_initPreset.bimOpacityDefault)
 const partialXray = ref(false)
 const modelPickInfo = ref<ModelPickInfo | null>(null)
-const pctTip = (v: number) => `${v}%`
+const expanded = ref(false)
+const openLayerGroups = ref<string[]>([])
 
 const modelPickPanelStyle = computed(() => {
   const info = modelPickInfo.value
@@ -349,22 +286,9 @@ const roleMeta = (role: ModelPickInfo['role']) => {
   return map[role] ?? map.unknown
 }
 
-/** 默认外景 */
-const activeEnvDesc = computed(
-  () => SCENE_ENVIRONMENTS.find(e => e.id === sceneEnvironment.value)?.description ?? ''
-)
-
-const sceneTag = computed(() => {
-  if (basemap.value === 'satellite') {
-    return `Cesium ${mapViewMode.value === '3d' ? '三维' : '二维'} · 天地图影像 · 两湖隧道（南湖段）`
-  }
-  if (basemap.value === 'vector') {
-    return `Cesium ${mapViewMode.value === '3d' ? '三维' : '二维'} · 天地图矢量 · 两湖隧道（南湖段）`
-  }
-  return '主体：完整BIM(3dtile) · 局部竣工区分 · 施工范围示意'
-})
-
 const mapContainerRef = ref<HTMLDivElement | null>(null)
+const mapError = ref('')
+let disposed = false
 
 function onContextMenu(p: ScenePoint) {
   emit('contextmenu', p)
@@ -481,11 +405,23 @@ function clearGroupItems(g: (typeof layerGroups)[number]) {
 }
 
 function onResetView() {
+  stopRoaming(false)
+  forceClosePopup()
   void resetMapView()
 }
 
-function toggleFirstPerson() {
-  void setFirstPerson(!firstPersonActive.value)
+let autoExpanded = false
+async function toggleRoaming() {
+  if (roaming.active || roaming.loading) stopRoaming()
+  else {
+    forceClosePopup()
+    if (!expanded.value && (mapContainerRef.value?.clientHeight ?? 0) < 560) {
+      autoExpanded = true
+      expanded.value = true
+      await nextTick()
+    }
+    void startRoaming()
+  }
 }
 
 function resizeMaxPx() {
@@ -497,7 +433,7 @@ function resizeMinPx() {
 
 /* 图层分组定义 */
 const layerGroups = reactive([
-  { key: 'structure', name: '隧道环境', color: '#8fa8d0',
+  { key: 'structure', name: '隧道环境', on: true, color: '#8fa8d0',
     all: [
       { key: 'structureUp', name: '隧道结构上层', color: '#8fa8d0' },
       { key: 'structureDown', name: '隧道结构下层', color: '#7d9bc9' },
@@ -510,7 +446,7 @@ const layerGroups = reactive([
       { key: 'substation', name: '变电所', color: '#ffd04d' }
     ],
     items: ['structureUp', 'structureDown', 'pipe', 'passage', 'opsCenter', 'rainPump', 'fireStation', 'wastePump', 'substation'] },
-  { key: 'env', name: '环控系统', color: '#00c9a7',
+  { key: 'env', name: '环控系统', on: true, color: '#00c9a7',
     all: [
       { key: 'covi', name: 'CO/VI检测器', color: '#00c9a7' },
       { key: 'wind', name: '风速风向仪', color: '#4ee6ff' },
@@ -521,7 +457,7 @@ const layerGroups = reactive([
       { key: 'waterLevel', name: '积水监测', color: '#4ee6ff' }
     ],
     items: ['covi', 'wind', 'illum', 'flame', 'heatSensor', 'smokeSensor', 'waterLevel'] },
-  { key: 'traffic', name: '交通管控', color: '#4ea6ff',
+  { key: 'traffic', name: '交通管控', on: true, color: '#4ea6ff',
     all: [
       { key: 'laneInd', name: '车道指示器', color: '#2ee6a0' },
       { key: 'infoBoard', name: '可变情报板', color: '#4ee6ff' },
@@ -532,7 +468,7 @@ const layerGroups = reactive([
       { key: 'speaker', name: '广播扬声器', color: '#b08cff' }
     ],
     items: ['laneInd', 'infoBoard', 'vehicleDet', 'camera', 'dome', 'phone', 'speaker'] },
-  { key: 'monitor', name: '结构监测', color: '#ff5f6b',
+  { key: 'monitor', name: '结构监测', on: true, color: '#ff5f6b',
     all: [
       { key: 'corrosion', name: '结构腐蚀监测', color: '#ff5f6b' },
       { key: 'bolt', name: '螺栓受力监测', color: '#ff8a5a' },
@@ -543,7 +479,7 @@ const layerGroups = reactive([
       { key: 'complaint', name: '投诉点位', color: '#ff8a5a' }
     ],
     items: ['corrosion', 'bolt', 'pressure', 'stress', 'waterpress', 'disease', 'complaint'] },
-  { key: 'mep', name: '隧道机电', color: '#5aa7ff',
+  { key: 'mep', name: '隧道机电', on: true, color: '#5aa7ff',
     all: [
       { key: 'fan', name: '风机', color: '#5aa7ff' },
       { key: 'damper', name: '风阀', color: '#4ee6ff' },
@@ -557,7 +493,7 @@ const layerGroups = reactive([
 ])
 // 初始化总开关：根据 defaultGroups 决定默认开启的分组（未传则全部开启）
 layerGroups.forEach(g => {
-  ;(g as any).on = props.defaultGroups ? props.defaultGroups.includes(g.key as PointGroup) : true
+  g.on = props.defaultGroups ? props.defaultGroups.includes(g.key as PointGroup) : true
 })
 
 const detailVisible = ref(false)
@@ -607,6 +543,7 @@ function toggleResizeHeight() {
 }
 
 onBeforeUnmount(() => {
+  disposed = true
   dragging = false
   window.removeEventListener('keydown', onEscClose)
 })
@@ -683,8 +620,10 @@ const {
   setObliqueOpacity,
   setBimOpacity,
   setPartialXray,
-  setFirstPerson,
-  firstPersonActive,
+  roaming, roamEquipment, startRoaming, stopRoaming,
+  toggleRoamingPlayback, seekRoaming, reverseRoaming, setRoamingLayer,
+  setRoamingEyeHeight, setRoamingLateralOffset, setRoamingDimStructure, inspectRoamingEquipment,
+  focusDeviceById,
   setSceneEnvironment,
   resetMapView,
   closeScenePopup,
@@ -724,8 +663,14 @@ const {
 )
 closeScenePopupSafe = closeScenePopup
 
+watch(() => [roaming.active, roaming.loading], () => {
+  if (autoExpanded && !roaming.active && !roaming.loading) { expanded.value = false; autoExpanded = false }
+})
+
+defineExpose({ locatePoint: (id: string) => { forceClosePopup(); focusDeviceById(id) } })
+
 function onEscClose(e: KeyboardEvent) {
-  if (e.key === 'Escape') forceClosePopup()
+  if (e.key === 'Escape') { forceClosePopup(); expanded.value = false }
 }
 
 onMounted(() => {
@@ -733,12 +678,22 @@ onMounted(() => {
     sceneHeight.value = parseFloat(String(props.height || '420')) || 420
   }
   window.addEventListener('keydown', onEscClose)
-  void loadTunnelRoute().then(route => {
+  void initializeMap()
+})
+
+async function initializeMap() {
+  mapError.value = ''
+  try {
+    const route = await loadTunnelRoute()
+    if (disposed) return
     routeScreen.value = route.toScreenPercentRoute()
     realityRouteReady.value = routeScreen.value.length >= 2
-    void mountMap(basemap.value, mapViewMode.value)
-  })
-})
+    await mountMap(basemap.value, mapViewMode.value)
+  } catch (error) {
+    if (!disposed) mapError.value = '场景初始化失败，请检查路线数据、模型资源与 WebGL 支持。'
+    console.warn('[tunnel] 场景初始化失败', error)
+  }
+}
 
 watch(basemap, mode => {
   detailVisible.value = false
@@ -870,238 +825,44 @@ function historyOption(p: ScenePoint) {
   height: v-bind('props.height || "420px"');
 }
 
-/* 底部场景工具栏 */
+
+.tunnel-scene.is-expanded {
+  position: fixed !important; inset: 0; width: 100vw; height: 100dvh !important; z-index: 2000; border-radius: 0;
+}
 .scene-toolbar {
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-
-  .tb-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .tb-label {
-    color: #d7e8ff;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    margin-right: 2px;
-    opacity: 0.9;
-  }
-  .tb-divider {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(78, 230, 255, 0.35), transparent);
-  }
-
-  &--float {
-    position: absolute;
-    left: 50%;
-    bottom: 12px;
-    transform: translateX(-50%);
-    width: min(980px, calc(100% - 24px));
-    padding: 12px 16px;
-    border-radius: 16px;
-    background: rgba(5, 16, 36, 0.88);
-    border: 1px solid rgba(78, 200, 255, 0.42);
-    box-shadow:
-      0 10px 36px rgba(2, 12, 36, 0.65),
-      inset 0 1px 0 rgba(140, 210, 255, 0.14);
-    backdrop-filter: blur(14px);
-  }
-
+  position: absolute; z-index: 46; display: flex; align-items: center; gap: 5px;
+  left: 50%; bottom: 16px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px);
+  padding: 7px 10px; border: 1px solid #91b9da30; border-radius: 12px;
+  background: linear-gradient(120deg, #0b1e30eb, #071323ed); backdrop-filter: blur(18px);
+  box-shadow: 0 8px 32px #0005, inset 0 1px #ffffff07;
   .tb-act {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: 10px;
-    border: 1px solid rgba(100, 160, 230, 0.4);
-    background: rgba(18, 48, 96, 0.72);
-    color: #e8f4ff;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.18s ease;
-    &:hover:not(:disabled) {
-      border-color: rgba(78, 230, 255, 0.7);
-      background: rgba(28, 72, 140, 0.85);
-    }
-    &:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    &.on {
-      color: #041018;
-      background: linear-gradient(135deg, #22d3ee, #67e8f9);
-      border-color: #a5f3fc;
-      box-shadow: 0 0 14px rgba(34, 211, 238, 0.45);
-    }
-    &--ghost {
-      background: rgba(12, 28, 56, 0.65);
-      color: #b8d4f5;
-    }
-    &__icon { font-size: 13px; line-height: 1; }
-    &__txt { white-space: nowrap; }
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px; padding: 0 12px;
+    border: 1px solid transparent; background: transparent; border-radius: 8px; color: #b2c6da;
+    font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; transition: background .2s, color .2s;
+    &:hover:not(:disabled) { background: #ffffff0c; color: #f0f9ff; }
+    &:disabled { opacity: .35; cursor: not-allowed; }
+    &--primary { background: #5dbcae13; border-color: #5dbcae30; color: #a5ded5; }
+    &--primary:hover:not(:disabled), &.on { background: #5dbcae28; color: #d4fff7; }
+    &--icon { padding: 0; width: 34px; }
   }
-
-  .tb-hint {
-    font-size: 12px;
-    color: #ecfeff;
-    padding: 4px 10px;
-    border-radius: 8px;
-    background: rgba(34, 211, 238, 0.16);
-    border: 1px solid rgba(34, 211, 238, 0.4);
-  }
-
-  .tb-legend {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    color: #e8f4ff;
-    .lg {
-      width: 10px;
-      height: 10px;
-      border-radius: 2px;
-      display: inline-block;
-      &.bim { background: #22d3ee; box-shadow: 0 0 6px #22d3ee; }
-      &.partial { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; margin-left: 8px; }
-    }
+  .tb-divider { width: 1px; height: 20px; background: #93b7d325; margin: 0 5px; }
+  .tb-legend { display: inline-flex; align-items: center; gap: 5px; margin: 0 8px; color: #829bb0; font-size: 10px; white-space: nowrap;
+    i { width: 5px; height: 5px; border-radius: 1px; margin-left: 5px; &.bim { background: #7bafce; } &.partial { background: #dfbf8f; } }
   }
 }
-
-.layer-actions {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
-  .la-btn {
-    flex: 1;
-    padding: 4px 0;
-    font-size: 11px;
-    color: #9fc3f0;
-    background: rgba(22, 55, 110, 0.45);
-    border: 1px solid rgba(78, 160, 255, 0.3);
-    border-radius: 6px;
-    cursor: pointer;
-    &:hover { color: #fff; border-color: rgba(78, 230, 255, 0.5); }
-  }
+.layer-collapse {
+  --el-collapse-border-color: #91b9da1f; --el-collapse-header-bg-color: transparent;
+  --el-collapse-content-bg-color: transparent; --el-collapse-header-text-color: #aac4da;
+  --el-collapse-header-height: 38px;
+  .layer-group-name { display: flex; gap: 8px; align-items: center; width: 100%; font-size: 12px; i { width: 5px; height: 5px; border-radius: 50%; } small { margin-left: auto; margin-right: 12px; color: #64849f; } }
+  .layer-actions { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; :deep(.el-switch) { margin-right: auto; } }
+  .la-btn { padding: 3px 9px; color: #a2bfd6; border: 1px solid #7ca6c530; border-radius: 4px; background: #24415a55; cursor: pointer; font-size: 10px; }
 }
-
-.map-scene-layers {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 14px;
-  margin-bottom: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(78, 160, 255, 0.22);
-  .bm-hint {
-    flex: 1 1 100%;
-    margin: 0;
-    font-size: 11px;
-    line-height: 1.45;
-    color: #8fa8c8;
-  }
-  .preset-desc {
-    color: #4ee6ff;
-    opacity: 0.85;
-  }
-  .preset-group {
-    flex: 1 1 100%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .env-group {
-    flex: 1 1 100%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    :deep(.el-radio-button__inner) {
-      padding: 5px 10px;
-      font-size: 11px;
-      background: rgba(20, 48, 98, 0.55);
-      border-color: rgba(78, 160, 255, 0.35) !important;
-      color: #9fc3f0;
-    }
-    :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-      background: linear-gradient(180deg, rgba(60, 140, 255, 0.85), rgba(25, 80, 190, 0.75));
-      color: #fff;
-      box-shadow: 0 0 10px rgba(78, 230, 255, 0.35);
-    }
-  }
-  .env-desc {
-    color: #8fb8e8;
-    opacity: 0.9;
-  }
-  :deep(.el-checkbox) {
-    padding: 4px 10px;
-    border-radius: 8px;
-    border: 1px solid rgba(78, 160, 255, 0.22);
-    background: rgba(12, 32, 64, 0.45);
-    transition: all 0.15s ease;
-    &:hover {
-      border-color: rgba(103, 232, 249, 0.5);
-      background: rgba(20, 52, 100, 0.65);
-    }
-    &.is-checked {
-      border-color: rgba(34, 211, 238, 0.65);
-      box-shadow: 0 0 12px rgba(34, 211, 238, 0.2);
-      background: rgba(8, 40, 56, 0.7);
-    }
-  }
-}
-
-/* 可拖拽调高把手 */
-.resize-handle {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 2px;
-  height: 20px;
-  cursor: ns-resize;
-  background: rgba(6, 18, 40, 0.94);
-  border-top: 1px solid rgba(78, 160, 255, 0.35);
-  user-select: none;
-  transition: background 0.2s;
-  &:hover { background: rgba(20, 52, 110, 0.9); }
-  .rh-bar {
-    width: 44px; height: 3px; border-radius: 2px;
-    background: rgba(78, 230, 255, 0.6);
-  }
-  .rh-tip {
-    font-size: 10px; color: #7f95b8;
-    line-height: 1;
-  }
-}
-
-/* 图层 chip */
-.layer-chip {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 11px;
-  border: 1px solid rgba(78, 160, 255, 0.4);
-  border-radius: 12px;
-  background: rgba(16, 42, 88, 0.72);
-  color: #eaf4ff;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .chip-name { color: #f0f7ff; }
-  .chip-count { font-size: 11px; color: #9ec0e8; font-weight: 500; }
-  &.on {
-    border-color: rgba(78, 230, 255, 0.85);
-    box-shadow: 0 0 10px rgba(78, 230, 255, 0.28);
-    background: rgba(20, 70, 130, 0.82);
-  }
-}
+.layer-group-title small { font-size: 10px; color: #6d8da6; font-weight: 400; }
+.scene-panel-enter-active, .scene-panel-leave-active { transition: opacity .25s, translate .25s; }
+.scene-panel-enter-from, .scene-panel-leave-to { opacity: 0; translate: 0 10px; }
+@media (max-width: 620px) { .scene-toolbar { gap: 0; padding: 5px; bottom: 12px; .tb-act { padding: 0 9px; font-size: 11px; } .tb-legend { display: none; } } }
+@media (prefers-reduced-motion: reduce) { .scene-panel-enter-active, .scene-panel-leave-active { transition: none; } }
 
 .scene-viewport {
   position: relative;
@@ -1136,7 +897,8 @@ function historyOption(p: ScenePoint) {
   font-size: 13px;
   background: rgba(6, 16, 36, 0.82);
   backdrop-filter: blur(4px);
-  pointer-events: none;
+  pointer-events: auto;
+  .map-retry { color: #b4e6ed; border: 1px solid #5b9daf66; background: #173449; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
   .ml-spinner {
     width: 28px;
     height: 28px;
@@ -1452,65 +1214,6 @@ function historyOption(p: ScenePoint) {
     radial-gradient(ellipse 90% 75% at 50% 48%, transparent 50%, rgba(4, 14, 36, 0.42) 100%),
     radial-gradient(circle at 18% 12%, rgba(78, 230, 255, 0.06), transparent 42%),
     radial-gradient(circle at 82% 78%, rgba(16, 185, 129, 0.05), transparent 38%);
-}
-
-.scene-tag {
-  position: absolute;
-  left: 14px;
-  bottom:  14px;
-  z-index: 18;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: min(460px, calc(100% - 28px));
-  padding: 8px 14px;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  color: #f2f8ff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-  background: rgba(4, 16, 38, 0.86);
-  border: 1px solid rgba(110, 190, 255, 0.5);
-  backdrop-filter: blur(8px);
-  box-shadow: 0 4px 16px rgba(4, 16, 48, 0.45);
-  .st-dot {
-    flex: none;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #34d399;
-    box-shadow: 0 0 8px rgba(52, 211, 153, 0.9);
-  }
-}
-
-.fp-hud {
-  position: absolute;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  border-radius: 20px;
-  background: rgba(4, 16, 38, 0.86);
-  border: 1px solid rgba(78, 230, 255, 0.55);
-  box-shadow: 0 6px 22px rgba(4, 16, 48, 0.5), 0 0 18px rgba(34, 211, 238, 0.25);
-  backdrop-filter: blur(8px);
-  pointer-events: none;
-  &__title {
-    font-size: 13px;
-    font-weight: 700;
-    color: #a5f3fc;
-    white-space: nowrap;
-  }
-  &__keys {
-    font-size: 11px;
-    color: #9ec0e8;
-    white-space: nowrap;
-  }
 }
 
 .history-chart {

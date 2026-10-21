@@ -3,28 +3,14 @@
     <!-- 三维场景铺满 -->
     <div class="scene-wrap">
       <MarkPoint :index="1" doc-key="overview.scene" />
-      <TunnelScene map-mode :points="points" height="100%" />
+      <TunnelScene ref="sceneRef" map-mode :points="points" height="100%" />
     </div>
 
     <!-- 左侧悬浮面板列 -->
     <div class="map-side-rail map-side-rail--left">
       <div class="panel side-panel">
         <MarkPoint :index="2" doc-key="overview.alarm" />
-        <div class="panel-title">全局告警面板</div>
-        <p class="panel-sub">聚焦：紧急/重要告警处置入口</p>
-        <div class="alarm-stats">
-          <div class="as-item red"><div class="as-num">2</div><div>紧急</div></div>
-          <div class="as-item orange"><div class="as-num">5</div><div>重要</div></div>
-          <div class="as-item blue"><div class="as-num">12</div><div>一般</div></div>
-          <div class="as-item gray"><div class="as-num">28</div><div>提示</div></div>
-        </div>
-        <el-table :data="alarms" size="small" height="150" @row-click="locateAlarm">
-          <el-table-column prop="time" label="时间" width="62" />
-          <el-table-column prop="level" label="级别" width="54">
-            <template #default="{ row }"><el-tag :type="row.lvType" size="small">{{ row.level }}</el-tag></template>
-          </el-table-column>
-          <el-table-column prop="desc" label="告警内容" />
-        </el-table>
+        <AlarmPanel :items="DEMO_ALERTS" @locate="locateAlarm" />
       </div>
 
       <div class="panel side-panel">
@@ -93,6 +79,9 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
+import AlarmPanel from '../components/AlarmPanel.vue'
+import { DEMO_ALERTS, type TunnelAlert } from '../config/alerts'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 import VChart from '../components/VChart.vue'
 import MarkPoint from '../components/MarkPoint.vue'
@@ -130,7 +119,7 @@ const points: ScenePoint[] = [
   { id: 'fl1', name: '火焰探测器 K3+500', kind: 'flame', group: 'env', status: 'ok', left: '64%', top: '22%', leftNum: 64, scale: 0.85, stake: 'K3+500', value: '正常', inspect: '2026-10-12' },
   { id: 'tmp1', name: '感温探测器', kind: 'heatSensor', group: 'env', status: 'ok', left: '62%', top: '18%', leftNum: 62, scale: 0.8, stake: 'K3+400', value: '24.6℃', inspect: '2026-10-12' },
   { id: 'smk1', name: '感烟探测器 K2+900', kind: 'smokeSensor', group: 'env', status: 'ok', left: '36%', top: '22%', leftNum: 36, scale: 0.8, stake: 'K2+900', value: '正常', inspect: '2026-10-12' },
-  { id: 'w1', name: '积水监测 W1', kind: 'waterLevel', group: 'env', status: 'ok', left: '66%', top: '80%', leftNum: 66, scale: 0.8, stake: 'K3+700', value: '2.1cm', inspect: '2026-10-15' },
+  { id: 'w1', name: '积水监测 W1', kind: 'waterLevel', group: 'env', status: 'alarm', left: '46%', top: '80%', leftNum: 46, scale: 0.8, stake: 'K3+050', value: '待复核', alarm: '积水液位快速上升，待现场复核（示例）', inspect: '2026-10-15' },
   // 结构监测
   { id: 'set1', name: '应力应变监测点', kind: 'stress', group: 'monitor', status: 'ok', left: '50%', top: '44%', leftNum: 50, scale: 0.8, stake: 'K3+200', value: '0.6mm', inspect: '2026-10-12', unit: 'mm', history: [
     { time: '周一', value: 0.52 }, { time: '周二', value: 0.55 }, { time: '周三', value: 0.58 }, { time: '周四', value: 0.6 }, { time: '周五', value: 0.59 }
@@ -150,13 +139,7 @@ const points: ScenePoint[] = [
   { id: 'lamp1', name: '照明灯组 K2+400', kind: 'lamp', group: 'mep', status: 'ok', left: '26%', top: '34%', leftNum: 26, scale: 0.85, stake: 'K2+400', value: '96回路', inspect: '2026-10-05' }
 ]
 
-const alarms = [
-  { time: '14:12', level: '紧急', lvType: 'danger', src: '安全应急', desc: 'K3+050 积水液位快速上升，触发红色预警' },
-  { time: '13:48', level: '重要', lvType: 'warning', src: '智能交通', desc: 'K3+050 AI 识别违停事件，超时未确认' },
-  { time: '13:20', level: '重要', lvType: 'warning', src: '智慧养护', desc: '诱导屏 K3+400 离线超过 30 分钟' },
-  { time: '12:55', level: '一般', lvType: 'primary', src: '智慧养护', desc: 'K3+200 照度偏低，建议检查照明回路' },
-  { time: '11:30', level: '一般', lvType: 'primary', src: '智能交通', desc: '断面流量骤降 40%，疑似拥堵' }
-]
+const sceneRef = ref<InstanceType<typeof TunnelScene>>()
 
 const devices = [
   { name: '视频监控', icon: '📹', ok: 86, total: 88, fault: 2 },
@@ -220,8 +203,8 @@ const ticketOption = {
   ]
 }
 
-function locateAlarm(row: any) {
-  console.log('locate', row.desc)
+function locateAlarm(alert: TunnelAlert) {
+  sceneRef.value?.locatePoint(alert.pointId)
 }
 </script>
 
@@ -244,16 +227,6 @@ function locateAlarm(row: any) {
 
 .side-panel {
   .panel-title { font-size: 14px; margin-bottom: 10px; }
-}
-
-.alarm-stats { display: flex; gap: 6px; margin-bottom: 8px; }
-.as-item {
-  flex: 1; text-align: center; border-radius: 4px; padding: 5px 0; font-size: 11px;
-  &.red { background: rgba(245, 63, 63, 0.18); color: #ff5f6b; }
-  &.orange { background: rgba(255, 125, 0, 0.18); color: #ffb03a; }
-  &.blue { background: rgba(22, 93, 255, 0.2); color: #4ea6ff; }
-  &.gray { background: rgba(30, 50, 80, 0.5); color: #7188a8; }
-  .as-num { font-size: 18px; font-weight: 800; }
 }
 
 .traffic-now {
