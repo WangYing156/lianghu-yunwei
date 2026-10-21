@@ -1,0 +1,420 @@
+/* 地图场景 · 弹窗 / 浮层 / 场景容器 */
+
+:root {
+  --map-accent: #4ee6ff;
+  --map-accent-dim: rgba(78, 230, 255, 0.35);
+  --map-glass: rgba(8, 22, 48, 0.82);
+  --map-glass-border: rgba(78, 160, 255, 0.42);
+  --map-shadow: 0 12px 40px rgba(4, 20, 60, 0.55), 0 0 1px rgba(78, 230, 255, 0.35);
+  --map-rail-width: 288px;
+}
+
+/* 子页面地图区块 */
+.scene-panel {
+  padding: 0 !important;
+  overflow: hidden;
+  border-radius: 10px !important;
+  box-shadow: var(--map-shadow);
+
+  &::before,
+  &::after {
+    width: 18px;
+    height: 18px;
+  }
+
+  :deep(.tunnel-scene) {
+    border-radius: 10px;
+    border: none;
+    box-shadow: inset 0 0 0 1px rgba(78, 160, 255, 0.12);
+  }
+}
+
+/* 全屏地图页 · 左右侧栏遮罩 */
+.map-layout-full {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: calc(var(--map-rail-width) + 36px);
+    z-index: 35;
+    pointer-events: none;
+  }
+  &::before {
+    left: 0;
+    background: linear-gradient(90deg, rgba(4, 18, 46, 0.72) 0%, rgba(4, 18, 46, 0.35) 55%, transparent 100%);
+  }
+  &::after {
+    right: 0;
+    background: linear-gradient(270deg, rgba(4, 18, 46, 0.72) 0%, rgba(4, 18, 46, 0.35) 55%, transparent 100%);
+  }
+}
+
+.map-side-rail {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  width: var(--map-rail-width);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* 高于场景内浮层（popup 40 / attr 42），避免被 Cesium 场景盖住 */
+  z-index: 60;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  pointer-events: auto;
+
+  .side-panel {
+    flex: none;
+    padding: 14px;
+  }
+}
+.map-side-rail--left {
+  left: 14px;
+}
+.map-side-rail--right {
+  right: 14px;
+}
+
+/* 图层 Popover（Teleport） */
+.layer-pop.el-popover.el-popper {
+  background: linear-gradient(165deg, rgba(12, 36, 78, 0.98), rgba(6, 20, 48, 0.98)) !important;
+  border: 1px solid var(--map-glass-border) !important;
+  border-radius: 12px !important;
+  box-shadow: var(--map-shadow) !important;
+  padding: 14px 14px 10px !important;
+  backdrop-filter: blur(12px);
+
+  .el-popper__arrow::before {
+    background: rgba(12, 36, 78, 0.98) !important;
+    border-color: var(--map-glass-border) !important;
+  }
+}
+
+.layer-group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+  color: #e8f6ff;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(78, 160, 255, 0.28);
+  letter-spacing: 0.5px;
+}
+
+.layer-check {
+  padding: 4px 2px;
+  border-radius: 6px;
+  transition: background 0.15s;
+  &:hover {
+    background: rgba(40, 90, 180, 0.22);
+  }
+}
+.layer-check .el-checkbox__label {
+  color: #b8cbe8;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lc-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.layer-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.map-scene-layers {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(78, 160, 255, 0.22);
+  .el-checkbox {
+    margin-right: 0;
+  }
+  .el-checkbox__label {
+    color: #b8cbe8;
+    font-size: 12px;
+  }
+}
+
+.basemap-switch {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(78, 160, 255, 0.22);
+  .bm-title {
+    font-size: 12px;
+    color: #c5daf5;
+    font-weight: 600;
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+  }
+  .el-radio-button__inner {
+    padding: 6px 11px;
+    font-size: 11px;
+    background: rgba(20, 48, 98, 0.55);
+    border-color: rgba(78, 160, 255, 0.35) !important;
+    color: #9fc3f0;
+  }
+  .el-radio-button__original-radio:checked + .el-radio-button__inner {
+    background: linear-gradient(180deg, rgba(60, 140, 255, 0.85), rgba(25, 80, 190, 0.75));
+    color: #fff;
+    box-shadow: 0 0 10px rgba(78, 230, 255, 0.35);
+  }
+}
+
+/* 设备点位详情弹窗 */
+.point-dialog.el-dialog {
+  --el-dialog-bg-color: transparent;
+  --el-dialog-box-shadow: none;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  position: fixed !important;
+  right: max(18px, 2vw) !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  max-height: min(88vh, 720px);
+  display: flex;
+  flex-direction: column;
+
+  .el-dialog__header {
+    margin: 0;
+    padding: 0;
+    border: none;
+  }
+  .el-dialog__body {
+    padding: 0;
+    flex: 1;
+    min-height: 0;
+    overflow: visible;
+  }
+  .el-dialog__header {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .el-dialog__footer {
+    display: none;
+  }
+  .el-dialog__title {
+    display: none;
+  }
+  .el-dialog__headerbtn {
+    top: 14px;
+    right: 14px;
+    z-index: 2;
+    .el-dialog__close {
+      color: #9fc3f0;
+      font-size: 18px;
+      &:hover {
+        color: var(--map-accent);
+      }
+    }
+  }
+}
+
+.pd-shell {
+  border-radius: 14px;
+  border: 1px solid var(--map-glass-border);
+  background: linear-gradient(165deg, rgba(14, 42, 88, 0.96) 0%, rgba(6, 18, 42, 0.98) 100%);
+  box-shadow: var(--map-shadow);
+  overflow: hidden;
+  backdrop-filter: blur(14px);
+}
+
+.pd-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 48px 14px 18px;
+  border-bottom: 1px solid rgba(78, 160, 255, 0.22);
+  background: linear-gradient(180deg, rgba(28, 72, 150, 0.45), rgba(12, 34, 74, 0.2));
+}
+
+.pd-icon-wrap {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  background: rgba(8, 24, 54, 0.75);
+  border: 1px solid rgba(78, 230, 255, 0.45);
+  box-shadow: 0 0 16px rgba(78, 230, 255, 0.25);
+}
+
+.pd-titles {
+  flex: 1;
+  min-width: 0;
+}
+.pd-name {
+  font-size: 17px;
+  font-weight: 700;
+  color: #f0f8ff;
+  letter-spacing: 0.5px;
+  line-height: 1.35;
+}
+.pd-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #8fa8c8;
+}
+
+.pd-status {
+  flex: none;
+  margin-top: 2px;
+}
+
+.pd-body {
+  padding: 14px 16px 8px;
+}
+
+.pd-chart,
+[data-chart-host] {
+  width: 100%;
+  min-width: 240px;
+  height: 200px;
+}
+
+.pd-chart-wrap {
+  margin-top: 12px;
+  padding: 12px 12px 4px;
+  border: 1px solid rgba(70, 140, 230, 0.25);
+  border-radius: 8px;
+  background: rgba(12, 30, 66, 0.35);
+}
+
+.pd-chart-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8f6ff;
+  margin-bottom: 4px;
+  .pd-chart-unit {
+    font-size: 11px;
+    color: #8fa8c8;
+    font-weight: 400;
+  }
+}
+
+.pd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.pd-cell {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(12, 32, 68, 0.55);
+  border: 1px solid rgba(70, 140, 230, 0.18);
+  &.full {
+    grid-column: 1 / -1;
+  }
+  &.alarm-cell {
+    border-color: rgba(255, 95, 107, 0.45);
+    background: rgba(80, 20, 30, 0.35);
+  }
+  .pd-label {
+    font-size: 11px;
+    color: #7188a8;
+    margin-bottom: 4px;
+  }
+  .pd-val {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e8f6ff;
+    word-break: break-all;
+  }
+}
+
+.pd-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid rgba(78, 160, 255, 0.2);
+  background: rgba(6, 18, 40, 0.55);
+}
+
+.pd-shell--popup {
+  width: min(420px, 92vw);
+}
+
+.pd-status-tag {
+  flex: none;
+  margin-top: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  &.is-ok {
+    color: #35e08c;
+    background: rgba(0, 210, 106, 0.15);
+    border: 1px solid rgba(0, 210, 106, 0.45);
+  }
+  &.is-warn {
+    color: #ffb400;
+    background: rgba(255, 180, 0, 0.12);
+    border: 1px solid rgba(255, 180, 0, 0.4);
+  }
+  &.is-alarm {
+    color: #ff8a8c;
+    background: rgba(255, 77, 79, 0.18);
+    border: 1px solid rgba(255, 77, 79, 0.45);
+  }
+  &.is-offline {
+    color: #9fb0c8;
+    background: rgba(127, 149, 184, 0.15);
+    border: 1px solid rgba(127, 149, 184, 0.35);
+  }
+}
+
+.pd-btn {
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+  &--ghost {
+    color: #b8cbe8;
+    background: rgba(22, 55, 110, 0.55);
+    border-color: rgba(78, 160, 255, 0.35);
+    &:hover {
+      color: #fff;
+      border-color: rgba(78, 230, 255, 0.55);
+    }
+  }
+  &--primary {
+    color: #fff;
+    background: linear-gradient(180deg, rgba(60, 140, 255, 0.9), rgba(22, 93, 255, 0.85));
+    border-color: rgba(78, 230, 255, 0.45);
+    box-shadow: 0 0 12px rgba(78, 160, 255, 0.35);
+    &:hover {
+      filter: brightness(1.06);
+    }
+  }
+}
+
+/* 地图设备详情：TunnelScene 内 .map-floating-popup + .pd-shell，不再使用 Esri Popup */

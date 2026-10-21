@@ -1,0 +1,1530 @@
+<template>
+  <div class="tunnel-scene" :style="{ height: sceneStyleHeight }">
+    <!-- 三维隧道透视场景（铺满） -->
+    <div class="scene-viewport" :class="{ focused: focusedId, 'map-mode': true }" :style="{ '--fx': focusOrigin.x, '--fy': focusOrigin.y }">
+      <!-- Cesium：影像/矢量底图 + 本地 3D Tiles 实景模型 -->
+      <div class="scene-map-stack">
+        <div
+          ref="mapContainerRef"
+          class="scene-map-root"
+          :class="{ 'is-loading': !mapReady }"
+        />
+        <div
+          v-if="devicePopupAnchor"
+          class="map-floating-popup"
+          :style="{
+            left: devicePopupAnchor.x + 'px',
+            top: devicePopupAnchor.y + 'px'
+          }"
+          @pointerdown.stop
+          @click.stop
+        >
+          <button type="button" class="map-floating-popup__x" title="关闭" @click.stop.prevent="forceClosePopup">
+            ×
+          </button>
+          <div ref="devicePopupMountRef" class="map-floating-popup__inner" />
+        </div>
+
+        <!-- 选中模型属性（就近点击位置） -->
+        <div
+          v-if="modelPickInfo"
+          class="model-attr-panel"
+          :style="modelPickPanelStyle"
+          @pointerdown.stop
+          @click.stop
+        >
+          <div class="map-attr-head">
+            <span class="map-attr-role" :style="{ '--rc': roleMeta(modelPickInfo.role).color }">
+              <span class="map-attr-role-icon">{{ roleMeta(modelPickInfo.role).icon }}</span>
+              <span class="map-attr-role-txt">{{ roleMeta(modelPickInfo.role).label }}</span>
+            </span>
+            <button type="button" class="map-floating-popup__x" @click="modelPickInfo = null">×</button>
+          </div>
+          <div class="map-attr-title">{{ modelPickInfo.title }}</div>
+          <div class="map-attr-body">
+            <div v-for="(val, key) in modelPickInfo.properties" :key="key" class="map-attr-row">
+              <span class="k">{{ key }}</span>
+              <span class="v">{{ val }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-if="!mapReady" class="map-loading-mask">
+        <span class="ml-spinner"></span>
+        <span>{{ basemap === 'reality' ? '实景三维模型加载中…' : '地图场景加载中…' }}</span>
+      </div>
+
+      <div class="map-vignette" aria-hidden="true"></div>
+      <div class="scene-tag">
+        <span class="st-dot"></span>{{ sceneTag }}
+      </div>
+
+      <!-- 第一人称漫游提示 -->
+      <div v-if="firstPersonActive" class="fp-hud">
+        <span class="fp-hud__title">👁 第一人称漫游</span>
+        <span class="fp-hud__keys">W / S 前进后退 · 拖拽查看 · Esc 退出</span>
+      </div>
+
+      <!-- 底部场景工具栏 -->
+      <div class="scene-toolbar scene-toolbar--float">
+        <div class="tb-row tb-row--layers">
+          <span class="tb-label">图层</span>
+          <template v-for="g in layerGroups" :key="g.key">
+            <el-popover :width="300" trigger="click" placement="top" popper-class="layer-pop">
+              <template #reference>
+                <button type="button" class="layer-chip" :class="{ on: g.on }" @click.prevent>
+                  <span class="chip-dot" :style="{ background: g.color }"></span>
+                  <span class="chip-name">{{ g.name }}</span>
+                  <span class="chip-count">{{ activeCount(g) }}/{{ g.all.length }}</span>
+                </button>
+              </template>
+              <div class="layer-group-title">
+                <span>{{ g.name }}</span>
+                <el-switch v-model="g.on" size="small" class="group-switch" />
+              </div>
+              <div class="layer-actions">
+                <button type="button" class="la-btn" @click="selectAllInGroup(g)">全选</button>
+                <button type="button" class="la-btn" @click="clearGroupItems(g)">清空</button>
+              </div>
+              <div v-if="g.key === 'structure'" class="basemap-switch">
+                <div class="bm-title">底图模式</div>
+                <el-radio-group v-model="basemap" size="small">
+                  <el-radio-button value="satellite">卫星</el-radio-button>
+                  <el-radio-button value="vector">矢量</el-radio-button>
+                  <el-radio-button value="reality">实景三维</el-radio-button>
+                </el-radio-group>
+              </div>
+              <div v-if="g.key === 'structure'" class="map-scene-layers">
+                <div class="bm-title">视图</div>
+                <el-radio-group v-model="mapViewMode" size="small" :disabled="!mapReady">
+                  <el-radio-button value="3d">三维</el-radio-button>
+                  <el-radio-button value="2d">二维</el-radio-button>
+                </el-radio-group>
+                <p class="bm-hint">主体：两湖隧道模型；倾斜摄影作背景参照</p>
+                <el-checkbox v-model="basemapEnabled" size="small">显示底图</el-checkbox>
+                <el-checkbox v-model="showFullTunnel" size="small">完整施工模型</el-checkbox>
+                <el-checkbox v-model="showPartialTunnel" size="small">局部竣工模型</el-checkbox>
+                <div class="bm-title">正射透明度（↓更突出隧道）</div>
+                <el-slider v-model="orthophotoAlpha" :min="0" :max="100" :format-tooltip="pctTip" size="small" />
+                <div class="bm-title">倾斜摄影透明度（↑更实）</div>
+                <el-slider v-model="obliqueAlpha" :min="0" :max="100" :format-tooltip="pctTip" size="small" />
+                <div class="bm-title">BIM 发光亮度</div>
+                <el-slider v-model="bimBrightness" :min="20" :max="100" :format-tooltip="pctTip" size="small" />
+                <div class="bm-title">施工模型透明度</div>
+                <el-slider v-model="bimOpacity" :min="10" :max="100" :format-tooltip="pctTip" size="small" />
+                <div class="bm-title">竣工模型显示</div>
+                <el-radio-group v-model="partialXray" size="small" class="preset-group">
+                  <el-radio-button :value="false">原始</el-radio-button>
+                  <el-radio-button :value="true">X光</el-radio-button>
+                </el-radio-group>
+                <div class="bm-title">场景环境</div>
+                <el-radio-group v-model="sceneEnvironment" size="small" class="env-group">
+                  <el-radio-button v-for="e in SCENE_ENVIRONMENTS" :key="e.id" :value="e.id">
+                    {{ e.icon }} {{ e.label }}
+                  </el-radio-button>
+                </el-radio-group>
+                <p class="bm-hint env-desc">{{ activeEnvDesc }}</p>
+              </div>
+              <el-checkbox-group v-model="g.items">
+                <div v-for="it in g.all" :key="it.key" class="layer-check">
+                  <el-checkbox :value="it.key" size="small">
+                    <span class="lc-dot" :style="{ background: it.color }"></span>{{ it.name }}
+                  </el-checkbox>
+                </div>
+              </el-checkbox-group>
+            </el-popover>
+          </template>
+        </div>
+
+        <div class="tb-divider" aria-hidden="true"></div>
+
+        <div class="tb-row tb-row--tools">
+          <span class="tb-label">交互</span>
+          <button type="button" class="tb-act tb-act--ghost" :disabled="!mapReady" @click="onResetView">
+            <span class="tb-act__icon">⌂</span>
+            <span class="tb-act__txt">复位</span>
+          </button>
+          <button
+            type="button"
+            class="tb-act"
+            :class="{ on: firstPersonActive }"
+            :disabled="!mapReady || mapViewMode !== '3d'"
+            @click="toggleFirstPerson"
+          >
+            <span class="tb-act__icon">👁</span>
+            <span class="tb-act__txt">{{ firstPersonActive ? '退出内部' : '第一人称' }}</span>
+          </button>
+        </div>
+
+        <div v-if="showFullTunnel || showPartialTunnel" class="tb-row tb-row--status">
+          <span v-if="showFullTunnel || showPartialTunnel" class="tb-legend">
+            <i v-if="showFullTunnel" class="lg bim"></i><template v-if="showFullTunnel">施工</template>
+            <i v-if="showPartialTunnel" class="lg partial"></i><template v-if="showPartialTunnel">竣工</template>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 可拖拽调高把手 -->
+    <div
+      v-if="resizable"
+      class="resize-handle"
+      @mousedown="startResize"
+      @dblclick.prevent="toggleResizeHeight"
+    >
+      <div class="rh-bar"></div>
+      <span class="rh-tip">拖拽可以调整高度 · 双击切换试一试</span>
+    </div>
+
+    <el-dialog
+      v-if="detailVisible"
+      v-model="detailVisible"
+      width="440px"
+      :modal="false"
+      :show-close="true"
+      append-to-body
+      class="point-dialog"
+      @closed="forceClosePopup()"
+    >
+      <div v-if="detail" class="pd-shell">
+        <div class="pd-header">
+          <div class="pd-icon-wrap">{{ detail.icon || kindIcon(detail.kind) }}</div>
+          <div class="pd-titles">
+            <div class="pd-name">{{ detail.name }}</div>
+            <div class="pd-meta">{{ kindName(detail.kind) }} · {{ groupName(detail.group) }}</div>
+          </div>
+          <el-tag class="pd-status" :type="statusType(detail.status)" effect="dark" round>
+            {{ statusName(detail.status) }}
+          </el-tag>
+        </div>
+        <div class="pd-body">
+          <div class="pd-grid">
+            <div class="pd-cell">
+              <div class="pd-label">桩号位置</div>
+              <div class="pd-val">{{ detail.stake }}</div>
+            </div>
+            <div class="pd-cell">
+              <div class="pd-label">实时数值</div>
+              <div class="pd-val">{{ detail.value || '—' }}</div>
+            </div>
+            <div class="pd-cell">
+              <div class="pd-label">最近巡检</div>
+              <div class="pd-val">{{ detail.inspect || '—' }}</div>
+            </div>
+            <div class="pd-cell" :class="{ 'alarm-cell': detail.alarm }">
+              <div class="pd-label">关联告警</div>
+              <div class="pd-val">{{ detail.alarm || '无' }}</div>
+            </div>
+          </div>
+          <div v-if="detail.history && detail.history.length" class="history-chart">
+            <div class="hc-title">
+              <span>数值变化趋势</span>
+              <span class="hc-unit">{{ detail.unit || '' }}</span>
+            </div>
+            <VChart :option="historyOption(detail)" height="200px" />
+          </div>
+        </div>
+        <div class="pd-foot">
+          <el-button size="small" @click="forceClosePopup">关闭</el-button>
+          <el-button size="small" type="primary">调取实时视频</el-button>
+        </div>
+      </div>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import VChart from './VChart.vue'
+import { useCesiumTunnelMap, type ModelPickInfo } from '../composables/useCesiumTunnelMap'
+import { loadTunnelRoute, progressOnRoute } from '../utils/tunnelRouteLoader'
+import type { MapDevicePoint } from '../composables/useCesiumTunnelMap'
+import {
+  getSceneVisualPreset,
+  type SceneVisualPresetId
+} from '../config/sceneVisualPresets'
+import { SCENE_ENVIRONMENTS, type SceneEnvironmentId } from '../config/sceneEnvironment'
+import { createMapPopupElement, disposeMapPopupChart, mountMapPopupChart } from '../utils/mapPopupContent'
+
+export type PointKind =
+  // 隧道主体
+  | 'structureUp' | 'structureDown' | 'pipe' | 'passage' | 'opsCenter' | 'rainPump' | 'fireStation' | 'wastePump' | 'substation'
+  // 环控系统
+  | 'covi' | 'wind' | 'illum' | 'flame' | 'heatSensor' | 'smokeSensor' | 'waterLevel'
+  // 交通管控
+  | 'laneInd' | 'infoBoard' | 'vehicleDet' | 'camera' | 'dome' | 'phone' | 'speaker'
+  // 结构监测
+  | 'corrosion' | 'bolt' | 'pressure' | 'stress' | 'waterpress'
+  // 隧道机电
+  | 'fan' | 'damper' | 'vent' | 'firePump' | 'fireValve' | 'lamp' | 'pump'
+  // 功能点位（病害/投诉）
+  | 'disease' | 'complaint'
+
+export type PointGroup = 'structure' | 'env' | 'traffic' | 'monitor' | 'mep'
+
+export interface ScenePoint {
+  id: string
+  name: string
+  kind: PointKind
+  group: PointGroup
+  status: 'ok' | 'warn' | 'alarm' | 'offline'
+  left: string
+  top: string
+  leftNum: number
+  scale: number
+  stake: string
+  value?: string
+  inspect?: string
+  alarm?: string
+  icon?: string
+  unit?: string
+  history?: { time: string; value: number }[]
+}
+
+const props = defineProps<{
+  points: ScenePoint[]
+  height?: string
+  mapMode?: boolean
+  defaultGroups?: PointGroup[]
+  resizable?: boolean
+  minHeight?: number
+  maxHeight?: number
+  /** 选择模式：点击点位时不弹内部详情，改为 emit select 事件（用于资产页等自定义选中） */
+  selectable?: boolean
+}>()
+const emit = defineEmits<{ (e: 'contextmenu', point: ScenePoint): void; (e: 'select', point: ScenePoint): void }>()
+
+/* 底图模式：卫星影像 / 电子地图 / 实景三维 */
+const basemap = ref<'satellite' | 'vector' | 'reality'>('reality')
+const mapViewMode = ref<'2d' | '3d'>('3d')
+const sceneVisualPreset = ref<SceneVisualPresetId>('engineering')
+const orthophotoAlpha = ref(20)
+const obliqueAlpha = ref(35)
+const sceneEnvironment = ref<SceneEnvironmentId>('default')
+const basemapEnabled = ref(false)
+const showFullTunnel = ref(true)
+const showPartialTunnel = ref(true)
+const bimBrightness = ref(88)
+const _initPreset = getSceneVisualPreset(sceneVisualPreset.value)
+const bimOpacity = ref(_initPreset.bimOpacityDefault)
+const partialXray = ref(false)
+const modelPickInfo = ref<ModelPickInfo | null>(null)
+const pctTip = (v: number) => `${v}%`
+
+const modelPickPanelStyle = computed(() => {
+  const info = modelPickInfo.value
+  if (!info || info.screenX == null || info.screenY == null) {
+    return { top: '52px', right: '14px', left: 'auto', transform: 'none' }
+  }
+  // 就近点击点：优先右上方，靠近边缘时翻到另一侧，避免出屏
+  const panelW = 300
+  const panelH = 220
+  const ox = info.screenX + 16
+  const oy = info.screenY - 16
+  const maxX = typeof window !== 'undefined' ? window.innerWidth - panelW - 12 : 1200
+  const maxY = typeof window !== 'undefined' ? window.innerHeight - panelH - 12 : 800
+  let left = ox
+  let top = oy
+  let transform = 'translateY(-100%)'
+  if (left > maxX) left = Math.max(12, info.screenX - panelW - 16)
+  if (top < panelH + 12) {
+    top = info.screenY + 16
+    transform = 'none'
+  }
+  return {
+    left: `${Math.min(Math.max(12, left), maxX)}px`,
+    top: `${Math.min(Math.max(12, top), maxY)}px`,
+    right: 'auto',
+    transform
+  }
+})
+/** 模型角色 → 徽标元信息 */
+const roleMeta = (role: ModelPickInfo['role']) => {
+  const map: Record<string, { icon: string; label: string; color: string }> = {
+    bim: { icon: '🏗️', label: '施工模型', color: '#22d3ee' },
+    partial: { icon: '🏛️', label: '竣工模型', color: '#fb923c' },
+    oblique: { icon: '🛰️', label: '倾斜摄影', color: '#94a3b8' },
+    unknown: { icon: '🧩', label: '三维构件', color: '#67e8f9' }
+  }
+  return map[role] ?? map.unknown
+}
+
+/** 默认外景 */
+const activeEnvDesc = computed(
+  () => SCENE_ENVIRONMENTS.find(e => e.id === sceneEnvironment.value)?.description ?? ''
+)
+
+const sceneTag = computed(() => {
+  if (basemap.value === 'satellite') {
+    return `Cesium ${mapViewMode.value === '3d' ? '三维' : '二维'} · 天地图影像 · 两湖隧道（南湖段）`
+  }
+  if (basemap.value === 'vector') {
+    return `Cesium ${mapViewMode.value === '3d' ? '三维' : '二维'} · 天地图矢量 · 两湖隧道（南湖段）`
+  }
+  return '主体：完整BIM(3dtile) · 局部竣工区分 · 施工范围示意'
+})
+
+const mapContainerRef = ref<HTMLDivElement | null>(null)
+
+function onContextMenu(p: ScenePoint) {
+  emit('contextmenu', p)
+}
+
+/* ===== 实景 / 回退模式：沿 GeoJSON 隧道路线（百分比投影）布设 ===== */
+const routeScreen = ref<{ x: number; y: number }[]>([])
+const realityRouteReady = ref(false)
+
+function routeAt(t: number) {
+  const ROUTE = routeScreen.value
+  if (ROUTE.length < 2) return ROUTE[0] ?? { x: 50, y: 50 }
+  const segLens = ROUTE.slice(1).map((p, i) => Math.hypot(p.x - ROUTE[i].x, p.y - ROUTE[i].y))
+  const totalLen = segLens.reduce((a, b) => a + b, 0)
+  if (totalLen <= 0) return ROUTE[0]
+  let d = Math.max(0, Math.min(1, t)) * totalLen
+  for (let i = 0; i < segLens.length; i++) {
+    if (d <= segLens[i] || i === segLens.length - 1) {
+      const r = segLens[i] > 0 ? Math.min(d / segLens[i], 1) : 0
+      return {
+        x: ROUTE[i].x + (ROUTE[i + 1].x - ROUTE[i].x) * r,
+        y: ROUTE[i].y + (ROUTE[i + 1].y - ROUTE[i].y) * r
+      }
+    }
+    d -= segLens[i]
+  }
+  return ROUTE[ROUTE.length - 1]
+}
+function hashId(id: string) {
+  let h = 0
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0
+  return h
+}
+
+/* 点位沿隧道路线布设：优先用桩号，其次按点位顺序插值；所有底图模式统一 */
+function routePosFor(p: ScenePoint) {
+  const arr = visiblePoints.value
+  const tt = progressOnRoute(p, arr)
+  const pt = routeAt(tt)
+  // 沿线路法向做小幅偏移，避免同桩号附近点位完全重叠
+  const jitter = ((hashId(p.id) % 9) - 4) * 0.7
+  return {
+    left: (pt.x + jitter * 0.4).toFixed(2) + '%',
+    top: (pt.y + jitter * 0.3).toFixed(2) + '%',
+    scale: 0.85 + (hashId(p.id) % 5) * 0.06
+  }
+}
+function posOf(p: ScenePoint) {
+  if (!realityRouteReady.value) return { left: '50%', top: '50%', scale: 0 }
+  return routePosFor(p)
+}
+
+const showTunnelRoute = ref(false)
+const showFlowAnim = ref(false)
+const showDeviceLayer = ref(true)
+
+function toMapDevice(p: ScenePoint): MapDevicePoint {
+  return {
+    id: p.id,
+    stake: p.stake,
+    name: p.name,
+    status: p.status,
+    group: p.group,
+    kind: p.kind,
+    value: p.value,
+    inspect: p.inspect,
+    alarm: p.alarm,
+    icon: p.icon || kindIcon(p.kind),
+    unit: p.unit,
+    history: p.history
+  }
+}
+
+function buildDevicePopup(p: MapDevicePoint) {
+  return createMapPopupElement(
+    {
+      name: p.name,
+      icon: p.icon || kindIcon(p.kind),
+      kindLabel: kindName(p.kind),
+      groupLabel: groupName(p.group),
+      statusLabel: statusName(p.status),
+      statusTone: statusTone(p.status),
+      stake: p.stake,
+      value: p.value,
+      inspect: p.inspect,
+      alarm: p.alarm,
+      unit: p.unit,
+      history: p.history
+    },
+    {
+      onClose: () => forceClosePopup(),
+      onVideo: () => undefined
+    }
+  )
+}
+
+/* closeScenePopup 在 useCesiumTunnelMap 之后才注入，关闭时做空判断避免 TDZ/HMR 竞态 */
+let closeScenePopupSafe: () => void = () => undefined
+
+function forceClosePopup() {
+  detailVisible.value = false
+  focusedId.value = null
+  modelPickInfo.value = null
+  closeScenePopupSafe()
+}
+
+function selectAllInGroup(g: (typeof layerGroups)[number]) {
+  g.on = true
+  g.items = g.all.map(it => it.key)
+}
+
+function clearGroupItems(g: (typeof layerGroups)[number]) {
+  g.items = []
+}
+
+function onResetView() {
+  void resetMapView()
+}
+
+function toggleFirstPerson() {
+  void setFirstPerson(!firstPersonActive.value)
+}
+
+function resizeMaxPx() {
+  return props.maxHeight ?? Math.floor(window.innerHeight * 0.8)
+}
+function resizeMinPx() {
+  return props.minHeight ?? Math.floor(window.innerHeight * 0.2)
+}
+
+/* 图层分组定义 */
+const layerGroups = reactive([
+  { key: 'structure', name: '隧道环境', color: '#8fa8d0',
+    all: [
+      { key: 'structureUp', name: '隧道结构上层', color: '#8fa8d0' },
+      { key: 'structureDown', name: '隧道结构下层', color: '#7d9bc9' },
+      { key: 'pipe', name: '机电管线', color: '#b08cff' },
+      { key: 'passage', name: '应急通道', color: '#2ee6a0' },
+      { key: 'opsCenter', name: '隧道运管中心', color: '#4ee6ff' },
+      { key: 'rainPump', name: '雨水泵房', color: '#5aa7ff' },
+      { key: 'fireStation', name: '消防泵房', color: '#ff5f6b' },
+      { key: 'wastePump', name: '废水泵房', color: '#00c9a7' },
+      { key: 'substation', name: '变电所', color: '#ffd04d' }
+    ],
+    items: ['structureUp', 'structureDown', 'pipe', 'passage', 'opsCenter', 'rainPump', 'fireStation', 'wastePump', 'substation'] },
+  { key: 'env', name: '环控系统', color: '#00c9a7',
+    all: [
+      { key: 'covi', name: 'CO/VI检测器', color: '#00c9a7' },
+      { key: 'wind', name: '风速风向仪', color: '#4ee6ff' },
+      { key: 'illum', name: '照度计', color: '#ffd04d' },
+      { key: 'flame', name: '火焰探测器', color: '#ff5f6b' },
+      { key: 'heatSensor', name: '感温探测器', color: '#ff8a5a' },
+      { key: 'smokeSensor', name: '感烟探测器', color: '#b08cff' },
+      { key: 'waterLevel', name: '积水监测', color: '#4ee6ff' }
+    ],
+    items: ['covi', 'wind', 'illum', 'flame', 'heatSensor', 'smokeSensor', 'waterLevel'] },
+  { key: 'traffic', name: '交通管控', color: '#4ea6ff',
+    all: [
+      { key: 'laneInd', name: '车道指示器', color: '#2ee6a0' },
+      { key: 'infoBoard', name: '可变情报板', color: '#4ee6ff' },
+      { key: 'vehicleDet', name: '车辆检测器', color: '#ffd04d' },
+      { key: 'camera', name: '固定摄像机', color: '#4ea6ff' },
+      { key: 'dome', name: '球形摄像机', color: '#00c9a7' },
+      { key: 'phone', name: '紧急电话', color: '#ff8a5a' },
+      { key: 'speaker', name: '广播扬声器', color: '#b08cff' }
+    ],
+    items: ['laneInd', 'infoBoard', 'vehicleDet', 'camera', 'dome', 'phone', 'speaker'] },
+  { key: 'monitor', name: '结构监测', color: '#ff5f6b',
+    all: [
+      { key: 'corrosion', name: '结构腐蚀监测', color: '#ff5f6b' },
+      { key: 'bolt', name: '螺栓受力监测', color: '#ff8a5a' },
+      { key: 'pressure', name: '压力监测', color: '#4ee6ff' },
+      { key: 'stress', name: '应力应变监测', color: '#b08cff' },
+      { key: 'waterpress', name: '水压监测', color: '#00c9a7' },
+      { key: 'disease', name: '病害点位', color: '#ff4d4f' },
+      { key: 'complaint', name: '投诉点位', color: '#ff8a5a' }
+    ],
+    items: ['corrosion', 'bolt', 'pressure', 'stress', 'waterpress', 'disease', 'complaint'] },
+  { key: 'mep', name: '隧道机电', color: '#5aa7ff',
+    all: [
+      { key: 'fan', name: '风机', color: '#5aa7ff' },
+      { key: 'damper', name: '风阀', color: '#4ee6ff' },
+      { key: 'vent', name: '风口', color: '#00c9a7' },
+      { key: 'firePump', name: '消防水泵', color: '#ff5f6b' },
+      { key: 'fireValve', name: '消防闸阀', color: '#ff8a5a' },
+      { key: 'lamp', name: '照明灯', color: '#ffd04d' },
+      { key: 'pump', name: '排水泵', color: '#4ea6ff' }
+    ],
+    items: ['fan', 'damper', 'vent', 'firePump', 'fireValve', 'lamp', 'pump'] }
+])
+// 初始化总开关：根据 defaultGroups 决定默认开启的分组（未传则全部开启）
+layerGroups.forEach(g => {
+  ;(g as any).on = props.defaultGroups ? props.defaultGroups.includes(g.key as PointGroup) : true
+})
+
+const detailVisible = ref(false)
+const detail = ref<ScenePoint | null>(null)
+/* 点击拉近聚集：聚焦某点位时放大并高亮，其他点位淡出 */
+const focusedId = ref<string | null>(null)
+/* 聚焦时场景拉近的 transform-origin（指向聚焦点位的路线坐标） */
+const focusOrigin = computed(() => {
+  if (!focusedId.value) return { x: '50%', y: '50%' }
+  const p = props.points.find(x => x.id === focusedId.value)
+  if (!p) return { x: '50%', y: '50%' }
+  const pos = posOf(p)
+  return { x: pos.left, y: pos.top }
+})
+
+/* 可拖拽调高 */
+const sceneHeight = ref(0)
+const sceneStyleHeight = computed(() => {
+  if (props.resizable && sceneHeight.value > 0) return sceneHeight.value + 'px'
+  return props.height || '420px'
+})
+let dragging = false
+function startResize(e: MouseEvent) {
+  dragging = true
+  e.preventDefault()
+  const startY = e.clientY
+  const startH = sceneHeight.value || parseFloat(props.height || '420')
+  const onMove = (ev: MouseEvent) => {
+    if (!dragging) return
+    const next = startH + (ev.clientY - startY)
+    sceneHeight.value = Math.max(resizeMinPx(), Math.min(resizeMaxPx(), next))
+  }
+  const onUp = () => {
+    dragging = false
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+function toggleResizeHeight() {
+  const min = resizeMinPx()
+  const max = resizeMaxPx()
+  const cur = sceneHeight.value || parseFloat(String(props.height || '420'))
+  sceneHeight.value = cur >= (min + max) / 2 ? min : max
+}
+
+onBeforeUnmount(() => {
+  dragging = false
+  window.removeEventListener('keydown', onEscClose)
+})
+
+/* kind -> group 映射（用于兼容旧 kind 字段按组过滤） */
+const groupOfKind = (p: ScenePoint) => p.group
+
+const kindMap: Record<string, string> = {
+  // 隧道主体
+  structureUp: '🧱', structureDown: '🧱', pipe: '🔩', passage: '🟢',
+  opsCenter: '🏢', rainPump: '🌧️', fireStation: '🚒', wastePump: '🚰', substation: '⚡',
+  // 环控系统
+  covi: '🌫️', wind: '🌬️', illum: '☀️', flame: '🔥', heatSensor: '🌡️', smokeSensor: '💨', waterLevel: '💧',
+  // 交通管控
+  laneInd: '🚦', infoBoard: '🖥️', vehicleDet: '🚗', camera: '📷', dome: '📹', phone: '☎️', speaker: '📢',
+  // 结构监测
+  corrosion: '🦠', bolt: '🔧', pressure: '🎯', stress: '📏', waterpress: '💧',
+  // 隧道机电
+  fan: '🌀', damper: '🔀', vent: '🌬️', firePump: '🚒', fireValve: '🚿', lamp: '💡', pump: '⚙️',
+  // 功能点位
+  disease: '🔴', complaint: '📝'
+}
+const kindCn: Record<string, string> = {
+  structureUp: '隧道结构上层', structureDown: '隧道结构下层', pipe: '机电管线', passage: '应急通道',
+  opsCenter: '隧道运管中心', rainPump: '雨水泵房', fireStation: '消防泵房', wastePump: '废水泵房', substation: '变电所',
+  covi: 'CO/VI检测器', wind: '风速风向仪', illum: '照度计', flame: '火焰探测器', heatSensor: '感温探测器', smokeSensor: '感烟探测器', waterLevel: '积水监测',
+  laneInd: '车道指示器', infoBoard: '可变情报板', vehicleDet: '车辆检测器', camera: '固定摄像机', dome: '球形摄像机', phone: '紧急电话', speaker: '广播扬声器',
+  corrosion: '结构腐蚀监测', bolt: '螺栓受力监测', pressure: '压力监测', stress: '应力应变监测', waterpress: '水压监测',
+  fan: '风机', damper: '风阀', vent: '风口', firePump: '消防水泵', fireValve: '消防闸阀', lamp: '照明灯', pump: '排水泵',
+  disease: '病害点位', complaint: '投诉信息点位'
+}
+const groupCn: Record<string, string> = {
+  structure: '隧道环境', env: '环控系统', traffic: '交通管控', monitor: '结构监测', mep: '隧道机电'
+}
+const kindIcon = (k: string) => kindMap[k] || '📍'
+const kindName = (k: string) => kindCn[k] || k
+const groupName = (g: string) => groupCn[g] || g
+const statusName = (s: string) => ({ ok: '正常运行', warn: '预警', alarm: '告警', offline: '离线' } as any)[s]
+const statusType = (s: string) => ({ ok: 'success', warn: 'warning', alarm: 'danger', offline: 'info' } as any)[s]
+
+function activeCount(g: any) {
+  return g.items.length
+}
+
+/* 点位按 group 过滤 */
+const visiblePoints = computed(() => {
+  const groupEnabled = (g: string) => {
+    const lg = layerGroups.find(x => x.key === g)
+    return lg ? (lg.on !== false && lg.items.length > 0) : true
+  }
+  return props.points.filter(p => {
+    if (!groupEnabled(p.group)) return false
+    // 组内细分：通过 kind 匹配 items
+    const lg = layerGroups.find(x => x.key === p.group)
+    if (!lg) return true
+    return lg.items.includes(p.kind)
+  })
+})
+
+const {
+  ready: mapReady,
+  mount: mountMap,
+  setBasemap: applyMapBasemap,
+  setViewMode,
+  setBasemapEnabled: applyBasemapEnabled,
+  setPartialTunnelVisible,
+  setFullTunnelVisible,
+  setBimBrightness,
+  setRouteLayerVisible,
+  setFlowAnimationEnabled,
+  setDeviceLayerVisible,
+  syncDeviceGraphics,
+  setOrthophotoOpacity,
+  setObliqueOpacity,
+  setBimOpacity,
+  setPartialXray,
+  setFirstPerson,
+  firstPersonActive,
+  setSceneEnvironment,
+  resetMapView,
+  closeScenePopup,
+  devicePopupAnchor
+} = useCesiumTunnelMap(
+  mapContainerRef,
+  () => visiblePoints.value.map(toMapDevice),
+  {
+    onPopupClosed: () => {
+      focusedId.value = null
+      detailVisible.value = false
+    },
+    onDeviceFocus: id => {
+      focusedId.value = id
+    },
+    onDeviceSelect: props.selectable
+      ? p => {
+          const sp = props.points.find(x => x.id === p.id)
+          if (sp) emit('select', sp)
+        }
+      : undefined,
+    buildPopupContent: buildDevicePopup,
+    getOrthophotoAlpha: () => orthophotoAlpha.value / 100,
+    getObliqueAlpha: () => obliqueAlpha.value / 100,
+    getBimOpacity: () => bimOpacity.value / 100,
+    getPartialXray: () => partialXray.value,
+    getSceneEnvironmentId: () => sceneEnvironment.value,
+    getVisualPresetId: () => sceneVisualPreset.value,
+    getBasemapEnabled: () => basemapEnabled.value,
+    getShowFullTunnel: () => showFullTunnel.value,
+    getShowPartialTunnel: () => showPartialTunnel.value,
+    getBimBrightness: () => bimBrightness.value,
+    onModelSelect: info => {
+      modelPickInfo.value = info
+    }
+  }
+)
+closeScenePopupSafe = closeScenePopup
+
+function onEscClose(e: KeyboardEvent) {
+  if (e.key === 'Escape') forceClosePopup()
+}
+
+onMounted(() => {
+  if (props.resizable) {
+    sceneHeight.value = parseFloat(String(props.height || '420')) || 420
+  }
+  window.addEventListener('keydown', onEscClose)
+  void loadTunnelRoute().then(route => {
+    routeScreen.value = route.toScreenPercentRoute()
+    realityRouteReady.value = routeScreen.value.length >= 2
+    void mountMap(basemap.value, mapViewMode.value)
+  })
+})
+
+watch(basemap, mode => {
+  detailVisible.value = false
+  closeScenePopup()
+  void applyMapBasemap(mode)
+})
+
+watch(basemapEnabled, () => applyBasemapEnabled(basemapEnabled.value))
+
+watch(showFullTunnel, show => {
+  if (mapViewMode.value === '3d') void setFullTunnelVisible(show)
+})
+
+watch(showPartialTunnel, show => {
+  if (mapViewMode.value === '3d') void setPartialTunnelVisible(show)
+})
+
+watch(bimBrightness, v => setBimBrightness(v))
+
+watch(showTunnelRoute, v => setRouteLayerVisible(v))
+watch(showFlowAnim, v => setFlowAnimationEnabled(v))
+watch(showDeviceLayer, v => setDeviceLayerVisible(v))
+/**
+ * 维度切换只由 mapViewMode 单向驱动。
+ * 注意：不要再叠加 mapReady 的 watch —— Cesium 场景就绪前后会各触发一次，
+ * 导致 morphTo3D 刚执行完又被反向 morph 回去（表现为「切三维没反应」）。
+ * setViewMode 内部已按 scene.mode 真实状态去重，并在 viewer 未就绪时记录意图，
+ * 待 mount 完成后由其内部竞态保护补应用。
+ */
+watch(mapViewMode, mode => {
+  void setViewMode(mode)
+})
+
+watch(visiblePoints, () => syncDeviceGraphics(), { deep: true })
+
+watch(orthophotoAlpha, v => {
+  setOrthophotoOpacity(v / 100)
+})
+
+watch(obliqueAlpha, v => {
+  setObliqueOpacity(v / 100)
+})
+
+watch(bimOpacity, v => {
+  setBimOpacity(v / 100)
+})
+
+watch(partialXray, v => {
+  if (mapViewMode.value === '3d') setPartialXray(v)
+})
+
+watch(sceneEnvironment, id => {
+  if (mapViewMode.value === '3d') setSceneEnvironment(id)
+})
+
+const devicePopupMountRef = ref<HTMLDivElement | null>(null)
+watch(
+  () => [devicePopupAnchor.value?.device.id, devicePopupMountRef.value] as const,
+  () => {
+    const mount = devicePopupMountRef.value
+    if (!mount) return
+    disposeMapPopupChart(mount.firstElementChild as HTMLElement | null)
+    mount.replaceChildren()
+    const anchor = devicePopupAnchor.value
+    if (!anchor) return
+    const el = buildDevicePopup(anchor.device)
+    mount.append(el)
+    // 必须等弹窗进入可见 DOM 后再挂图表，否则 ECharts 宽高为 0
+    requestAnimationFrame(() => mountMapPopupChart(el))
+  },
+  { flush: 'post' }
+)
+
+function statusTone(s: ScenePoint['status']): 'ok' | 'warn' | 'alarm' | 'offline' {
+  return s
+}
+
+function selectPoint(p: ScenePoint) {
+  if (props.selectable) {
+    emit('select', p)
+    return
+  }
+  focusedId.value = p.id
+  detail.value = p
+  detailVisible.value = true
+}
+
+/* 数值曲线 option */
+function historyOption(p: ScenePoint) {
+  const h = p.history || []
+  return {
+    grid: { left: 42, right: 14, top: 16, bottom: 26 },
+    tooltip: { trigger: 'axis' },
+    xAxis: {
+      type: 'category',
+      data: h.map(x => x.time),
+      axisLabel: { fontSize: 9, color: '#7188a8' },
+      axisLine: { lineStyle: { color: 'rgba(78,160,255,0.3)' } }
+    },
+    yAxis: {
+      type: 'value',
+      name: p.unit || '',
+      nameTextStyle: { fontSize: 9, color: '#7188a8' },
+      axisLabel: { fontSize: 9, color: '#7188a8' },
+      splitLine: { lineStyle: { color: 'rgba(78,160,255,0.12)' } }
+    },
+    series: [{
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 4,
+      data: h.map(x => x.value),
+      lineStyle: { color: '#4ee6ff', width: 2 },
+      itemStyle: { color: '#4ee6ff' },
+      areaStyle: { color: 'rgba(78,230,255,0.12)' }
+    }]
+  }
+}
+</script>
+
+<style scoped lang="scss">
+.tunnel-scene {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0b1a33;
+  display: flex;
+  flex-direction: column;
+  height: v-bind('props.height || "420px"');
+}
+
+/* 底部场景工具栏 */
+.scene-toolbar {
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  .tb-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .tb-label {
+    color: #d7e8ff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    margin-right: 2px;
+    opacity: 0.9;
+  }
+  .tb-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(78, 230, 255, 0.35), transparent);
+  }
+
+  &--float {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    width: min(980px, calc(100% - 24px));
+    padding: 12px 16px;
+    border-radius: 16px;
+    background: rgba(5, 16, 36, 0.88);
+    border: 1px solid rgba(78, 200, 255, 0.42);
+    box-shadow:
+      0 10px 36px rgba(2, 12, 36, 0.65),
+      inset 0 1px 0 rgba(140, 210, 255, 0.14);
+    backdrop-filter: blur(14px);
+  }
+
+  .tb-act {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(100, 160, 230, 0.4);
+    background: rgba(18, 48, 96, 0.72);
+    color: #e8f4ff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.18s ease;
+    &:hover:not(:disabled) {
+      border-color: rgba(78, 230, 255, 0.7);
+      background: rgba(28, 72, 140, 0.85);
+    }
+    &:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    &.on {
+      color: #041018;
+      background: linear-gradient(135deg, #22d3ee, #67e8f9);
+      border-color: #a5f3fc;
+      box-shadow: 0 0 14px rgba(34, 211, 238, 0.45);
+    }
+    &--ghost {
+      background: rgba(12, 28, 56, 0.65);
+      color: #b8d4f5;
+    }
+    &__icon { font-size: 13px; line-height: 1; }
+    &__txt { white-space: nowrap; }
+  }
+
+  .tb-hint {
+    font-size: 12px;
+    color: #ecfeff;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: rgba(34, 211, 238, 0.16);
+    border: 1px solid rgba(34, 211, 238, 0.4);
+  }
+
+  .tb-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #e8f4ff;
+    .lg {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      display: inline-block;
+      &.bim { background: #22d3ee; box-shadow: 0 0 6px #22d3ee; }
+      &.partial { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; margin-left: 8px; }
+    }
+  }
+}
+
+.layer-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  .la-btn {
+    flex: 1;
+    padding: 4px 0;
+    font-size: 11px;
+    color: #9fc3f0;
+    background: rgba(22, 55, 110, 0.45);
+    border: 1px solid rgba(78, 160, 255, 0.3);
+    border-radius: 6px;
+    cursor: pointer;
+    &:hover { color: #fff; border-color: rgba(78, 230, 255, 0.5); }
+  }
+}
+
+.map-scene-layers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(78, 160, 255, 0.22);
+  .bm-hint {
+    flex: 1 1 100%;
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #8fa8c8;
+  }
+  .preset-desc {
+    color: #4ee6ff;
+    opacity: 0.85;
+  }
+  .preset-group {
+    flex: 1 1 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .env-group {
+    flex: 1 1 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    :deep(.el-radio-button__inner) {
+      padding: 5px 10px;
+      font-size: 11px;
+      background: rgba(20, 48, 98, 0.55);
+      border-color: rgba(78, 160, 255, 0.35) !important;
+      color: #9fc3f0;
+    }
+    :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+      background: linear-gradient(180deg, rgba(60, 140, 255, 0.85), rgba(25, 80, 190, 0.75));
+      color: #fff;
+      box-shadow: 0 0 10px rgba(78, 230, 255, 0.35);
+    }
+  }
+  .env-desc {
+    color: #8fb8e8;
+    opacity: 0.9;
+  }
+  :deep(.el-checkbox) {
+    padding: 4px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(78, 160, 255, 0.22);
+    background: rgba(12, 32, 64, 0.45);
+    transition: all 0.15s ease;
+    &:hover {
+      border-color: rgba(103, 232, 249, 0.5);
+      background: rgba(20, 52, 100, 0.65);
+    }
+    &.is-checked {
+      border-color: rgba(34, 211, 238, 0.65);
+      box-shadow: 0 0 12px rgba(34, 211, 238, 0.2);
+      background: rgba(8, 40, 56, 0.7);
+    }
+  }
+}
+
+/* 可拖拽调高把手 */
+.resize-handle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+  height: 20px;
+  cursor: ns-resize;
+  background: rgba(6, 18, 40, 0.94);
+  border-top: 1px solid rgba(78, 160, 255, 0.35);
+  user-select: none;
+  transition: background 0.2s;
+  &:hover { background: rgba(20, 52, 110, 0.9); }
+  .rh-bar {
+    width: 44px; height: 3px; border-radius: 2px;
+    background: rgba(78, 230, 255, 0.6);
+  }
+  .rh-tip {
+    font-size: 10px; color: #7f95b8;
+    line-height: 1;
+  }
+}
+
+/* 图层 chip */
+.layer-chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid rgba(78, 160, 255, 0.4);
+  border-radius: 12px;
+  background: rgba(16, 42, 88, 0.72);
+  color: #eaf4ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .chip-name { color: #f0f7ff; }
+  .chip-count { font-size: 11px; color: #9ec0e8; font-weight: 500; }
+  &.on {
+    border-color: rgba(78, 230, 255, 0.85);
+    box-shadow: 0 0 10px rgba(78, 230, 255, 0.28);
+    background: rgba(20, 70, 130, 0.82);
+  }
+}
+
+.scene-viewport {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  perspective: 700px;
+  transform-origin: var(--fx, 50%) var(--fy, 50%);
+  transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.3, 1);
+  /* 点击拉近：场景整体向聚焦点推近放大 */
+  &.focused {
+    transform: scale(1.45);
+    z-index: 30;
+  }
+  &.map-mode {
+    perspective: none;
+    &.focused {
+      transform: none;
+    }
+  }
+}
+
+.map-loading-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #b8cbe8;
+  font-size: 13px;
+  background: rgba(6, 16, 36, 0.82);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  .ml-spinner {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 2px solid rgba(78, 160, 255, 0.25);
+    border-top-color: #4ee6ff;
+    animation: mapSpin 0.9s linear infinite;
+  }
+}
+@keyframes mapSpin {
+  to { transform: rotate(360deg); }
+}
+
+.scene-map-root.is-loading {
+  opacity: 0;
+}
+
+.scene-map-stack {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.map-floating-popup {
+  position: absolute;
+  z-index: 40;
+  pointer-events: auto;
+  min-width: 280px;
+  transform: translate(-50%, calc(-100% - 18px));
+  &__inner {
+    pointer-events: auto;
+    position: relative;
+    min-width: 280px;
+    :deep(.pd-chart),
+    :deep([data-chart-host]) {
+      width: 100% !important;
+      min-width: 240px !important;
+      height: 200px !important;
+    }
+  }
+  &__x {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    z-index: 2;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1px solid rgba(120, 190, 255, 0.55);
+    background: rgba(8, 24, 52, 0.95);
+    color: #e8f4ff;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    pointer-events: auto;
+    &:hover { background: rgba(30, 80, 150, 0.95); color: #fff; }
+  }
+}
+
+.model-attr-panel {
+  position: absolute;
+  top: 52px;
+  right: 14px;
+  z-index: 42;
+  width: min(320px, calc(100% - 28px));
+  max-height: min(360px, 56vh);
+  // overflow: auto;
+  padding: 14px 16px 12px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(10, 28, 58, 0.97), rgba(4, 14, 32, 0.94));
+  border: 1px solid rgba(103, 232, 249, 0.55);
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(34, 211, 238, 0.14),
+    0 0 28px rgba(34, 211, 238, 0.2);
+  backdrop-filter: blur(14px);
+  pointer-events: auto;
+  animation: attrPopIn 0.22s ease-out;
+  scrollbar-width: thin;
+
+  .map-attr-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .map-attr-role {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--rc, #67e8f9);
+    background: color-mix(in srgb, var(--rc, #67e8f9) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--rc, #67e8f9) 45%, transparent);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--rc, #67e8f9) 28%, transparent);
+    &-icon { font-size: 13px; line-height: 1; }
+  }
+  .map-attr-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #f0f9ff;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(78, 160, 255, 0.16);
+    text-shadow: 0 0 14px rgba(34, 211, 238, 0.3);
+  }
+  .map-attr-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(78, 160, 255, 0.1);
+    &:last-child { border-bottom: none; }
+    .k {
+      color: #9ec0e8;
+      min-width: 78px;
+      flex: none;
+      padding-top: 1px;
+    }
+    .v {
+      color: #eaf4ff;
+      word-break: break-all;
+      line-height: 1.5;
+    }
+  }
+}
+
+@keyframes attrPopIn {
+  from { opacity: 0; filter: blur(2px); }
+  to { opacity: 1; filter: none; }
+}
+
+/* Cesium Viewer 容器 */
+.scene-map-root {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  /* Cesium 会自动撑满父容器；这里兜底保证 canvas 铺满 */
+  :deep(.cesium-viewer),
+  :deep(.cesium-widget),
+  :deep(.cesium-widget canvas) {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  /* 移除 Cesium 自带的版权条样式影响，保持场景干净（版权信息保留在credit 容器） */
+  :deep(.cesium-widget-credits) {
+    display: none !important;
+  }
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 2px,
+      rgba(78, 230, 255, 0.025) 2px,
+      rgba(78, 230, 255, 0.025) 3px
+    );
+    mix-blend-mode: soft-light;
+  }
+  &.dimmed {
+    filter: saturate(0.85) brightness(0.88);
+  }
+}
+
+/* 天地图/高德版权署名：保留但低调，不干扰场景（DOM 由 JS 动态创建，故用 :deep） */
+:deep(.tunnel-cesium-credit) {
+  position: absolute;
+  left: 8px;
+  bottom: 6px;
+  z-index: 3;
+  pointer-events: auto;
+  font-size: 10px;
+  line-height: 1.2;
+  opacity: 0.5;
+  a { color: #9fc3f0; }
+  .cesium-credit-expand-link { display: none; }
+}
+
+/* 顶棚（透视收束） */
+.ceiling {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 100%;
+  height: 55%;
+  transform: translateX(-50%);
+  background:
+    radial-gradient(ellipse 60% 100% at 50% 0%, rgba(120, 160, 230, 0.14), transparent 65%),
+    linear-gradient(to bottom, #16294d 0%, #0d1c3a 100%);
+  clip-path: polygon(28% 0, 72% 0, 58% 100%, 42% 100%);
+}
+.ceiling::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(to bottom, transparent 0 46px, rgba(255, 236, 160, 0.55) 46px 50px);
+  clip-path: inherit;
+  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.9) 60%, black);
+}
+
+.wall-l, .wall-r { position: absolute; top: 10%; bottom: 38%; width: 46%; }
+.wall-l {
+  left: 0;
+  background: linear-gradient(to right, #1b3057 0%, #12234a 70%, transparent 100%);
+  clip-path: polygon(0 0, 78% 8%, 78% 96%, 0 100%);
+}
+.wall-r {
+  right: 0;
+  background: linear-gradient(to left, #1b3057 0%, #12234a 70%, transparent 100%);
+  clip-path: polygon(22% 8%, 100% 0, 100% 100%, 22% 96%);
+}
+
+.road {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 52%;
+  background: linear-gradient(to top, #101d3a 0%, #1a2f5c 30%, #24407a 65%, #2c4d90 100%);
+  clip-path: polygon(30% 0, 70% 0, 118% 100%, -18% 100%);
+}
+.lane-lines {
+  position: absolute;
+  bottom: 0; left: 50%;
+  width: 4px; height: 52%;
+  transform: translateX(-50%) rotateX(62deg);
+  transform-origin: bottom;
+  background: repeating-linear-gradient(to top, #e8c34a 0 26px, transparent 26px 60px);
+  filter: blur(0.4px);
+}
+
+/* 设备点位 */
+.dev-point {
+  position: absolute;
+  z-index: 16;
+  transform: translate(-50%, -50%) scale(var(--s, 1));
+  cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  transition: transform 0.2s, opacity 0.3s;
+  &.no-transition {
+    transition: opacity 0.25s, filter 0.25s;
+  }
+  &.dim { opacity: 0.25; filter: grayscale(0.8); }
+  &:hover { transform: translate(-50%, -50%) scale(calc(var(--s, 1) * 1.25)); z-index: 22; }
+
+  /* 拉近聚集：聚焦点位放大居中，其余点位淡出 */
+  &.focused {
+    z-index: 40;
+    transform: translate(-50%, -50%) scale(1.9);
+    .dp-icon { box-shadow: 0 0 20px 5px rgba(78, 230, 255, 0.75); border-color: #4ee6ff; }
+    .dp-name { color: #fff; background: rgba(20, 70, 150, 0.95); }
+    .dp-value { color: #4ee6ff; background: rgba(20, 70, 150, 0.95); }
+  }
+  &.faded { opacity: 0.12; filter: grayscale(0.6) blur(0.3px); pointer-events: none; }
+
+  .dp-icon {
+    font-size: 16px; width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: rgba(10, 30, 60, 0.85);
+    border: 1.5px solid #3aa1ff;
+  }
+  .dp-name {
+    font-size: 10px; color: #e8f4ff;
+    background: rgba(8, 22, 44, 0.82);
+    padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+    border: 1px solid rgba(78, 160, 255, 0.22);
+    backdrop-filter: blur(4px);
+  }
+  .dp-value {
+    font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px;
+    background: rgba(8, 22, 44, 0.82);
+    border: 1px solid rgba(78, 160, 255, 0.15);
+  }
+
+  &.ok { .dp-icon { border-color: #00d26a; box-shadow: 0 0 6px rgba(0, 210, 106, 0.5); } .dp-value { color: #35e08c; } }
+  &.warn { .dp-icon { border-color: #ffb400; box-shadow: 0 0 6px rgba(255, 180, 0, 0.5); } .dp-value { color: #ffb400; } }
+  &.offline { .dp-icon { border-color: #7f95b8; filter: grayscale(1); } .dp-value { color: #7f95b8; } }
+  &.alarm {
+    .dp-icon { border-color: #ff4d4f; box-shadow: 0 0 10px rgba(255, 77, 79, 0.8); }
+    .dp-value { color: #ff7a7c; }
+    .pulse {
+      position: absolute; top: 0; left: 50%;
+      width: 26px; height: 26px; margin-left: -13px;
+      border-radius: 50%; border: 2px solid #ff4d4f;
+      animation: pulse 1.2s ease-out infinite;
+    }
+  }
+}
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+.map-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 100px rgba(4, 12, 32, 0.5),
+    inset 0 -40px 60px rgba(4, 16, 48, 0.35);
+  background:
+    radial-gradient(ellipse 90% 75% at 50% 48%, transparent 50%, rgba(4, 14, 36, 0.42) 100%),
+    radial-gradient(circle at 18% 12%, rgba(78, 230, 255, 0.06), transparent 42%),
+    radial-gradient(circle at 82% 78%, rgba(16, 185, 129, 0.05), transparent 38%);
+}
+
+.scene-tag {
+  position: absolute;
+  left: 14px;
+  bottom:  14px;
+  z-index: 18;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(460px, calc(100% - 28px));
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #f2f8ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  background: rgba(4, 16, 38, 0.86);
+  border: 1px solid rgba(110, 190, 255, 0.5);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(4, 16, 48, 0.45);
+  .st-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #34d399;
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.9);
+  }
+}
+
+.fp-hud {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: rgba(4, 16, 38, 0.86);
+  border: 1px solid rgba(78, 230, 255, 0.55);
+  box-shadow: 0 6px 22px rgba(4, 16, 48, 0.5), 0 0 18px rgba(34, 211, 238, 0.25);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  &__title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #a5f3fc;
+    white-space: nowrap;
+  }
+  &__keys {
+    font-size: 11px;
+    color: #9ec0e8;
+    white-space: nowrap;
+  }
+}
+
+.history-chart {
+  margin-top: 12px;
+  padding: 12px 0 4px;
+  border: 1px solid rgba(70, 140, 230, 0.25);
+  border-radius: 6px;
+  background: rgba(15, 40, 90, 0.35);
+  .hc-title {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; font-weight: 600; color: #e8f6ff; margin-bottom: 4px;
+    padding: 0 12px;
+    .hc-unit { font-size: 11px; color: #7188a8; font-weight: 400; }
+  }
+}
+</style>
+

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+.build-check/
+.nm-broken-1/
+.workbuddy/
+*.log
+.DS_Store
+public/三维数据/两湖倾斜/

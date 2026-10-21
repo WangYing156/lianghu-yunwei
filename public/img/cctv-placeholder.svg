@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="55%" stop-color="#13253f"/>
+      <stop offset="100%" stop-color="#0a1628"/>
+    </linearGradient>
+    <pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect width="4" height="1" fill="rgba(0,0,0,0.28)"/>
+    </pattern>
+    <radialGradient id="vignette" cx="50%" cy="45%" r="70%">
+      <stop offset="40%" stop-color="rgba(0,0,0,0)"/>
+      <stop offset="100%" stop-color="rgba(0,0,0,0.55)"/>
+    </radialGradient>
+  </defs>
+  <rect width="640" height="360" fill="url(#bg)"/>
+  <!-- tunnel vanishing perspective -->
+  <path d="M80 320 L280 140 L360 140 L560 320 Z" fill="rgba(30,58,95,0.55)" stroke="#2dd4bf" stroke-width="1.2" opacity="0.7"/>
+  <path d="M120 320 L300 160 L340 160 L520 320 Z" fill="none" stroke="#67e8f9" stroke-width="0.8" opacity="0.45"/>
+  <line x1="320" y1="140" x2="320" y2="320" stroke="rgba(103,232,249,0.25)" stroke-width="1" stroke-dasharray="6 8"/>
+  <!-- wall lights -->
+  <g opacity="0.7">
+    <circle cx="250" cy="180" r="3" fill="#fde68a"/>
+    <circle cx="390" cy="180" r="3" fill="#fde68a"/>
+    <circle cx="230" cy="210" r="2.5" fill="#fde68a"/>
+    <circle cx="410" cy="210" r="2.5" fill="#fde68a"/>
+    <circle cx="205" cy="250" r="2" fill="#fde68a"/>
+    <circle cx="435" cy="250" r="2" fill="#fde68a"/>
+  </g>
+  <rect width="640" height="360" fill="url(#scan)"/>
+  <rect width="640" height="360" fill="url(#vignette)"/>
+  <!-- HUD -->
+  <rect x="12" y="12" width="86" height="18" rx="2" fill="rgba(239,68,68,0.85)"/>
+  <text x="55" y="25" text-anchor="middle" fill="#fff" font-family="Consolas, monospace" font-size="11" font-weight="700">● REC</text>
+  <text x="110" y="25" fill="#94a3b8" font-family="Consolas, monospace" font-size="11">CAM-01  1080P</text>
+  <text x="628" y="25" text-anchor="end" fill="#64748b" font-family="Consolas, monospace" font-size="10">2026-10-21 09:15:32</text>
+  <text x="320" y="340" text-anchor="middle" fill="#7dd3fc" font-family="Microsoft YaHei, sans-serif" font-size="12" opacity="0.85">两湖隧道监控预览</text>
+</svg>
