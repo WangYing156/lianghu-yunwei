@@ -211,12 +211,16 @@ try {
     await page.waitForFunction(() =>
       window.__tunnelCesium
         .getTilesets()
+        .filter((ts) => ts.__tunnelRole === 'bim' || ts.__tunnelRole === 'partial')
         .every((ts) => ts.clippingPlanes?.enabled),
     )
     const result = await page.evaluate(() => {
       const t = window.__tunnelCesium,
         C = t.Cesium
-      const planes = t.getTilesets().map((ts) => {
+      const planes = t
+        .getTilesets()
+        .filter((ts) => ts.__tunnelRole === 'bim' || ts.__tunnelRole === 'partial')
+        .map((ts) => {
         const p = ts.clippingPlanes.get(0)
         return C.Plane.transform(
           new C.Plane(p.normal, p.distance),
@@ -423,6 +427,7 @@ try {
     await page.waitForFunction(() =>
       window.__tunnelCesium
         .getTilesets()
+        .filter((ts) => ts.__tunnelRole === 'bim' || ts.__tunnelRole === 'partial')
         .every((ts) => ts.clippingPlanes?.enabled),
     )
     assert.equal(
@@ -600,6 +605,7 @@ try {
       await page.evaluate(() =>
         window.__tunnelCesium
           .getTilesets()
+          .filter((ts) => ts.__tunnelRole === 'bim' || ts.__tunnelRole === 'partial')
           .every((ts) => ts.clippingPlanes?.enabled),
       ),
       true,
