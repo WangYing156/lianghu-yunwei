@@ -58,11 +58,12 @@ export function useSceneMarkers(options: MarkerOptions) {
   let catalogSequence = 0
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
   const clusterHistory: { members: string[]; position: number[] }[] = []
+  let clusteringWanted = true
 
   async function initialize(v: Cesium.Viewer) {
     normal = new Cesium.CustomDataSource('设施与 BIM 构件（自动聚合）')
     priority = new Cesium.CustomDataSource('告警与选中点位（独立显示）')
-    normal.clustering.enabled = true
+    normal.clustering.enabled = clusteringWanted
     normal.clustering.pixelRange = MARKER_CLUSTER_PIXELS
     normal.clustering.minimumClusterSize = 2
     normal.clustering.clusterLabels = false
@@ -193,10 +194,10 @@ export function useSceneMarkers(options: MarkerOptions) {
         motion.matches ? 1 : 1 + (Math.sin(performance.now() / 650) + 1) * 0.08
       entity.billboard = new Cesium.BillboardGraphics({
         image: markerSymbolUrl(point.kind, point.status, selected),
-        width: selected ? 34 : 28,
-        height: selected ? 34 : 28,
+        width: selected ? 36 : 30,
+        height: selected ? 45 : 38,
         scale: urgent ? new Cesium.CallbackProperty(pulse, false) : 1,
-        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       })
       entity.point = urgent
@@ -251,8 +252,9 @@ export function useSceneMarkers(options: MarkerOptions) {
       const selected = item.id === options.getSelectedEquipmentId()
       entity.billboard = new Cesium.BillboardGraphics({
         image: markerSymbolUrl(type.kind, 'bim', selected),
-        width: 28,
-        height: 28,
+        width: selected ? 36 : 30,
+        height: selected ? 45 : 38,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
         distanceDisplayCondition: new Cesium.DistanceDisplayCondition(
           BIM_MARKER_NEAR_DISTANCE,
           Number.POSITIVE_INFINITY,
@@ -317,6 +319,11 @@ export function useSceneMarkers(options: MarkerOptions) {
       if (sequence === catalogSequence) stats.loading = false
     }
   }
+  function setClustering(enabled: boolean) {
+    clusteringWanted = enabled
+    if (normal) normal.clustering.enabled = enabled
+    options.getViewer()?.scene.requestRender()
+  }
   function sync() {
     syncBusiness()
     syncModel()
@@ -353,6 +360,7 @@ export function useSceneMarkers(options: MarkerOptions) {
     stats,
     initialize,
     sync,
+    setClustering,
     clearEquipment,
     loadEquipment,
     destroy,

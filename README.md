@@ -2,6 +2,8 @@
 
 Vue 3 / TypeScript / Vite / Cesium / Element Plus / ECharts 可视化前端。
 
+给项目负责人的使用说明、思维导图、原型和验收清单在 [docs/交付/05-交付文件索引.md](docs/交付/05-交付文件索引.md)。
+
 ## 本地运行
 
 建议 Node.js 22 LTS，使用支持 WebGL 2 的现代桌面浏览器。

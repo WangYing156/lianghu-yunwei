@@ -3,7 +3,16 @@
     <!-- 三维场景为主体（铺满） -->
     <div class="asset-scene">
 
-      <TunnelScene map-mode selectable :points="points" height="100%" @contextmenu="onAssetContext" @select="onAssetSelect" />
+      <TunnelScene
+        ref="sceneRef"
+        map-mode
+        selectable
+        :points="points"
+        height="100%"
+        @contextmenu="onAssetContext"
+        @select="onAssetSelect"
+        @equipment-select="onEquipmentSelect"
+      />
       <!-- 操作提示 -->
       <div class="ctx-hint">💡 点击左侧资产列表，或点击 / 右键三维模型构件，弹出关联资料面板</div>
     </div>
@@ -206,10 +215,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Edit, Tools, Document, ArrowRight, Search, Close } from '@element-plus/icons-vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
+
+type SceneApi = {
+  locatePoint: (id: string) => void | Promise<void>
+}
 
 /* 资产点位（隧道内各类设备） */
 const points: ScenePoint[] = [
@@ -1006,25 +1019,76 @@ function toggleGroup(key: string) {
   collapsed[key] = !collapsed[key]
 }
 
-function selectAsset(a: Asset) {
+const sceneRef = ref<SceneApi | null>(null)
+
+function openAssetPanel(a: Asset, locate = false) {
   curAsset.value = a
   tab.value = 'model'
+  // 展开所属分组，保证列表高亮可见
+  const sub = subOfAsset(a.id)
+  const grp = subGroups.find((g) => g.subs.some((s) => s.key === sub))
+  if (grp) collapsed[grp.key] = false
+  if (sub) collapsed['sub:' + sub] = false
+  if (locate) void nextTick(() => sceneRef.value?.locatePoint(a.id))
 }
-/* 左键点击三维模型：弹出关联资料（与列表选择一致） */
+
+function matchAssetByName(name: string): Asset | undefined {
+  const exact = assetList.find((a) => a.name === name)
+  if (exact) return exact
+  return assetList.find(
+    (a) => name.includes(a.name) || a.name.includes(name.replace(/\s+/g, '')),
+  )
+}
+
+function selectAsset(a: Asset) {
+  openAssetPanel(a, true)
+}
+/* 左键点击三维业务点位：与列表同一资料面板 */
 function onAssetSelect(p: ScenePoint) {
-  const a = assets[p.id]
-  if (a) {
-    curAsset.value = a
-    tab.value = 'model'
+  const a = assets[p.id] ?? matchAssetByName(p.name)
+  if (a) openAssetPanel(a, false)
+}
+/* BIM 构件拾取：按名称映射到资产资料，保持与列表弹窗同步 */
+function assetFromPick(payload: {
+  id: string
+  name: string
+  category?: string
+  properties?: Record<string, string>
+}): Asset {
+  const props = payload.properties ?? {}
+  const rows = Object.entries(props).map(([k, v]) => ({ k, v }))
+  return {
+    id: `pick:${payload.id}`,
+    name: payload.name,
+    code: props['构件编号'] || payload.id,
+    icon: '🏛️',
+    type: payload.category || props['设备类别'] || 'BIM 构件',
+    stake: '竣工模型构件',
+    pos: [props['经度'], props['纬度'], props['高程(m)']].filter(Boolean).join(' · ') || '模型空间位置',
+    sys: payload.category || 'BIM 构件',
+    install: '—',
+    status: 'ok',
+    docs: rows.length,
+    structure: rows.slice(0, 4).length ? rows.slice(0, 4) : [{ k: '名称', v: payload.name }],
+    params: rows.slice(4, 8),
+    materials: rows.slice(8),
+    guide: [{ t: '模型检视', d: '该对象来自三维场景拾取，资料面板与资产列表使用同一套布局。' }],
+    docList: [],
   }
+}
+function onEquipmentSelect(payload: {
+  id: string
+  name: string
+  category?: string
+  properties?: Record<string, string>
+}) {
+  const a = matchAssetByName(payload.name) ?? assetFromPick(payload)
+  openAssetPanel(a, false)
 }
 /* 右键三维模型：同样弹出关联资料 */
 function onAssetContext(p: ScenePoint) {
-  const a = assets[p.id]
-  if (a) {
-    curAsset.value = a
-    tab.value = 'model'
-  }
+  const a = assets[p.id] ?? matchAssetByName(p.name)
+  if (a) openAssetPanel(a, false)
 }
 
 /* 更新设备 */

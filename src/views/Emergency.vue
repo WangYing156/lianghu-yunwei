@@ -1,11 +1,17 @@
 <template>
-  <div class="page-bg">
-    <!-- 应急处置三维场景（可拖拽调高） -->
-    <div class="panel scene-panel">
-      <TunnelScene map-mode resizable :points="emergencyPoints" height="320px" />
+  <div class="page-bg" :class="{ 'vr-immersive': vrFullscreen }">
+    <!-- 应急处置三维场景（可拖拽调高；VR 沉浸时升高） -->
+    <div class="panel scene-panel" :class="{ tall: vrFullscreen || vrLinked }">
+      <TunnelScene
+        ref="sceneRef"
+        map-mode
+        resizable
+        :points="emergencyPoints"
+        :height="vrFullscreen || vrLinked ? '520px' : '320px'"
+      />
     </div>
 
-    <div class="grid-2" style="margin-top: 16px">
+    <div v-show="!vrFullscreen" class="grid-2" style="margin-top: 16px">
       <!-- 火灾排烟控制 -->
       <div class="panel">
         <div class="panel-title">火灾排烟控制</div>
@@ -55,9 +61,9 @@
       </div>
     </div>
 
-    <div class="grid-2" style="margin-top: 16px">
+    <div v-show="!vrFullscreen" class="grid-2" style="margin-top: 16px">
       <!-- 交通事故控制 -->
-      <div class="panel">
+      <div class="panel acc-panel">
         <div class="panel-title">交通事故控制</div>
         <div class="acc-stats">
           <div class="acc-item"><b class="num-blue">0</b><span>当前事故</span></div>
@@ -66,7 +72,7 @@
           <div class="acc-item"><b class="num-green">4.2</b><span>平均响应(min)</span></div>
         </div>
         <div class="mini-title">事故处置流程</div>
-        <el-timeline style="padding-left: 4px">
+        <el-timeline class="acc-timeline" style="padding-left: 4px">
           <el-timeline-item timestamp="接警" type="primary" size="small">视频监控/紧急电话自动识别事故</el-timeline-item>
           <el-timeline-item timestamp="响应" size="small">联动车道指示器、情报板发布管制信息</el-timeline-item>
           <el-timeline-item timestamp="处置" size="small">应急队伍到场，广播疏导，现场处置</el-timeline-item>
@@ -101,26 +107,53 @@
     </div>
 
     <!-- 孪生VR仿真 -->
-    <div class="panel vr-panel" style="margin-top: 16px">
+    <div class="panel vr-panel" :class="{ immersive: vrFullscreen }" style="margin-top: 16px">
       <div class="panel-title">
         孪生VR仿真
         <span class="vr-tag">数字孪生 · 沉浸式应急推演</span>
+        <span v-if="vrLinked" class="vr-tag live">已联动上方三维场景</span>
       </div>
       <div class="vr-body">
-        <div class="vr-viewport" :class="{ roaming: vrRoaming }">
-          <div class="vr-sky"></div>
-          <div class="vr-ceiling"></div>
-          <div class="vr-wall vr-wall-l"></div>
-          <div class="vr-wall vr-wall-r"></div>
-          <div class="vr-road"></div>
-          <div class="vr-lanes"></div>
-          <span class="vr-hud">● 实时渲染 {{ vrRoaming ? '漫游中' : '暂停' }} · {{ vrScene }}</span>
-          <span class="vr-compass">N</span>
+        <div class="vr-main">
+          <div class="vr-viewport" :class="[vrSceneKey, { roaming: vrRoaming }]">
+            <div class="vr-sky"></div>
+            <div class="vr-ceiling"></div>
+            <div class="vr-wall vr-wall-l"></div>
+            <div class="vr-wall vr-wall-r"></div>
+            <div class="vr-road"></div>
+            <div class="vr-lanes"></div>
+            <div class="vr-fx" aria-hidden="true"></div>
+            <span class="vr-hud">● {{ vrRoaming ? '推演中' : '已暂停' }} · {{ vrScene }} · {{ vrStepTitle }}</span>
+            <span class="vr-compass">N</span>
+            <div class="vr-telemetry">
+              <div v-for="t in vrTelemetry" :key="t.k"><em>{{ t.k }}</em><b :class="t.cls">{{ t.v }}</b></div>
+            </div>
+          </div>
+          <div class="vr-side">
+            <div class="vs-label">推演步骤</div>
+            <ol class="vr-steps">
+              <li
+                v-for="(s, i) in vrSteps"
+                :key="s"
+                :class="{ active: i === vrStepIndex, done: i < vrStepIndex }"
+                @click="vrStepIndex = i"
+              >
+                <i>{{ i + 1 }}</i><span>{{ s }}</span>
+              </li>
+            </ol>
+            <div class="vs-label" style="margin-top: 12px">联动设备</div>
+            <div class="vr-devices">
+              <div v-for="d in vrDevices" :key="d.name" class="vd-item" :class="d.status">
+                <span>{{ d.name }}</span>
+                <b>{{ d.val }}</b>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="vr-controls">
           <div class="vr-scene-switch">
             <span class="vs-label">仿真场景</span>
-            <el-radio-group v-model="vrScene" size="small">
+            <el-radio-group v-model="vrScene" size="small" @change="onVrSceneChange">
               <el-radio-button value="火灾疏散">火灾疏散</el-radio-button>
               <el-radio-button value="积水排涝">积水排涝</el-radio-button>
               <el-radio-button value="交通事故">交通事故</el-radio-button>
@@ -128,11 +161,17 @@
             </el-radio-group>
           </div>
           <div class="vr-btns">
-            <el-button size="small" :type="vrRoaming ? 'primary' : 'default'" @click="vrRoaming = !vrRoaming">
+            <el-button size="small" :type="vrRoaming ? 'primary' : 'default'" @click="toggleVrRoam">
               <el-icon><VideoPlay v-if="!vrRoaming" /><VideoPause v-else /></el-icon>{{ vrRoaming ? '暂停' : '漫游' }}
             </el-button>
+            <el-button size="small" :type="vrLinked ? 'success' : 'default'" @click="toggleVrLink">
+              {{ vrLinked ? '解除场景联动' : '联动三维巡游' }}
+            </el-button>
             <el-button size="small" @click="resetVr"><el-icon><RefreshRight /></el-icon>重置视角</el-button>
-            <el-button size="small" type="success"><el-icon><FullScreen /></el-icon>全屏沉浸</el-button>
+            <el-button size="small" type="success" @click="toggleVrFullscreen">
+              <el-icon><FullScreen /></el-icon>{{ vrFullscreen ? '退出沉浸' : '全屏沉浸' }}
+            </el-button>
+            <el-button size="small" @click="focusVrHotspot">定位关键点</el-button>
           </div>
         </div>
         <div class="vr-desc">{{ vrDesc }}</div>
@@ -142,10 +181,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { VideoPlay, VideoPause, RefreshRight, FullScreen } from '@element-plus/icons-vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 import VChart from '../components/VChart.vue'
+
+type SceneApi = {
+  locatePoint: (id: string) => void | Promise<void>
+  startRoaming: () => void
+  stopRoaming: () => void
+  isRoaming: () => boolean
+}
+
+const sceneRef = ref<SceneApi | null>(null)
 
 const emergencyPoints: ScenePoint[] = [
   { id: 'w1', name: '积水点 W1', kind: 'waterLevel', group: 'env', status: 'ok', left: '16%', top: '70%', leftNum: 16, scale: 1.05, stake: 'K2+250', value: '1.8cm', unit: 'cm', history: [
@@ -208,25 +256,185 @@ const levelOption = {
 }
 
 /* ===== 孪生VR仿真 ===== */
-const vrRoaming = ref(true)
-const vrScene = ref('火灾疏散')
+type VrScene = '火灾疏散' | '积水排涝' | '交通事故' | '日常巡检'
 
-const vrDescMap: Record<string, string> = {
-  火灾疏散: '模拟隧道火灾工况，联动排烟风机、疏散指示灯、应急广播与逃生通道，验证人员疏散时间与烟气控制效果，辅助应急演练与预案优化。',
-  积水排涝: '模拟暴雨积水工况，联动积水监测、排涝泵、挡水板与情报板预警，推演排水能力与水位变化，为防汛调度提供可视化决策支持。',
-  交通事故: '模拟隧道内车辆碰撞/追尾工况，联动车道指示器、可变情报板、视频监控与紧急电话，演练交通管制与事故处置流程。',
-  日常巡检: '沿竣工模型路面路径巡游，在模型内部检视设备，叠加实时运行数据（CO/照度/风速/结构应力），支持点位定位与故障标注。'
+const vrRoaming = ref(true)
+const vrScene = ref<VrScene>('火灾疏散')
+const vrLinked = ref(false)
+const vrFullscreen = ref(false)
+const vrStepIndex = ref(0)
+
+const vrScripts: Record<
+  VrScene,
+  {
+    desc: string
+    hotspot: string
+    steps: string[]
+    devices: { name: string; val: string; status: 'ok' | 'warn' | 'alarm' }[]
+    telemetry: { k: string; v: string; cls: string }[]
+  }
+> = {
+  火灾疏散: {
+    desc: '模拟隧道火灾工况，联动排烟风机、疏散指示灯、应急广播与逃生通道，验证人员疏散时间与烟气控制效果，辅助应急演练与预案优化。',
+    hotspot: 'fan1',
+    steps: ['火情确认与分区锁定', '排烟模式切换', '诱导/广播疏散指引', '通道清障与复盘'],
+    devices: [
+      { name: '排烟风机 PY-1', val: '排烟 42Hz', status: 'warn' },
+      { name: '消防水泵 FP-1', val: '0.72MPa', status: 'ok' },
+      { name: '应急广播', val: '播放中', status: 'alarm' },
+      { name: '卷帘门', val: '降落到位', status: 'warn' },
+    ],
+    telemetry: [
+      { k: '烟气层', v: '2.1m', cls: 'num-orange' },
+      { k: '温度', v: '68℃', cls: 'num-red' },
+      { k: '能见度', v: '18m', cls: 'num-orange' },
+    ],
+  },
+  积水排涝: {
+    desc: '模拟暴雨积水工况，联动积水监测、排涝泵、挡水板与情报板预警，推演排水能力与水位变化，为防汛调度提供可视化决策支持。',
+    hotspot: 'w2',
+    steps: ['液位红色预警', '泵站联动启动', '交通诱导绕行', '水位回落确认'],
+    devices: [
+      { name: '积水点 W2', val: '26.8cm', status: 'alarm' },
+      { name: '排涝泵 P1', val: '210m³/h', status: 'warn' },
+      { name: '排涝泵 P2', val: '210m³/h', status: 'warn' },
+      { name: '情报板', val: '积水绕行', status: 'ok' },
+    ],
+    telemetry: [
+      { k: '液位', v: '26.8cm', cls: 'num-red' },
+      { k: '泵压', v: '0.60MPa', cls: 'num-blue' },
+      { k: '雨强', v: '38mm/h', cls: 'num-orange' },
+    ],
+  },
+  交通事故: {
+    desc: '模拟隧道内车辆碰撞/追尾工况，联动车道指示器、可变情报板、视频监控与紧急电话，演练交通管制与事故处置流程。',
+    hotspot: 'm1',
+    steps: ['接警与视频复核', '车道管制发布', '现场处置疏导', '解除管制恢复'],
+    devices: [
+      { name: '车道指示器', val: '左闭右通', status: 'warn' },
+      { name: '可变情报板', val: '事故缓行', status: 'ok' },
+      { name: '紧急电话', val: '通话中', status: 'alarm' },
+      { name: '视频监控', val: '锁定画面', status: 'ok' },
+    ],
+    telemetry: [
+      { k: '占道', v: '1 车道', cls: 'num-orange' },
+      { k: '响应', v: '3.8min', cls: 'num-green' },
+      { k: '排队', v: '420m', cls: 'num-blue' },
+    ],
+  },
+  日常巡检: {
+    desc: '沿竣工模型路面路径巡游，在模型内部检视设备，叠加实时运行数据（CO/照度/风速/结构应力），支持点位定位与故障标注。',
+    hotspot: 'fire1',
+    steps: ['入口段结构巡视', '机电设备抽检', '环控指标核对', '异常标注闭环'],
+    devices: [
+      { name: 'CO 监测', val: '12ppm', status: 'ok' },
+      { name: '照度', val: '328lx', status: 'ok' },
+      { name: '风速', val: '2.6m/s', status: 'ok' },
+      { name: '应力监测', val: '正常', status: 'ok' },
+    ],
+    telemetry: [
+      { k: 'CO', v: '12ppm', cls: 'num-green' },
+      { k: '照度', v: '328lx', cls: 'num-blue' },
+      { k: '风速', v: '2.6m/s', cls: 'num-blue' },
+    ],
+  },
 }
-const vrDesc = computed(() => vrDescMap[vrScene.value] || '')
+
+const vrSceneKey = computed(() => {
+  const map: Record<VrScene, string> = {
+    火灾疏散: 'scene-fire',
+    积水排涝: 'scene-flood',
+    交通事故: 'scene-traffic',
+    日常巡检: 'scene-patrol',
+  }
+  return map[vrScene.value]
+})
+const vrDesc = computed(() => vrScripts[vrScene.value].desc)
+const vrSteps = computed(() => vrScripts[vrScene.value].steps)
+const vrDevices = computed(() => vrScripts[vrScene.value].devices)
+const vrTelemetry = computed(() => vrScripts[vrScene.value].telemetry)
+const vrStepTitle = computed(
+  () => vrSteps.value[vrStepIndex.value] || '推演准备',
+)
+
+let stepTimer: number | undefined
+function armStepTimer() {
+  window.clearInterval(stepTimer)
+  if (!vrRoaming.value) return
+  stepTimer = window.setInterval(() => {
+    vrStepIndex.value = (vrStepIndex.value + 1) % vrSteps.value.length
+  }, 4200)
+}
+
+function onVrSceneChange() {
+  vrStepIndex.value = 0
+  armStepTimer()
+  if (vrLinked.value) focusVrHotspot()
+}
+
+function toggleVrRoam() {
+  vrRoaming.value = !vrRoaming.value
+  if (vrLinked.value) {
+    if (vrRoaming.value) sceneRef.value?.startRoaming()
+    else sceneRef.value?.stopRoaming()
+  }
+}
+
+function toggleVrLink() {
+  vrLinked.value = !vrLinked.value
+  if (vrLinked.value) {
+    vrRoaming.value = true
+    sceneRef.value?.startRoaming()
+    focusVrHotspot()
+  } else {
+    sceneRef.value?.stopRoaming()
+  }
+}
+
+function toggleVrFullscreen() {
+  vrFullscreen.value = !vrFullscreen.value
+  if (vrFullscreen.value) {
+    vrLinked.value = true
+    vrRoaming.value = true
+    sceneRef.value?.startRoaming()
+  }
+}
+
+function focusVrHotspot() {
+  const id = vrScripts[vrScene.value].hotspot
+  void sceneRef.value?.locatePoint(id)
+}
 
 function resetVr() {
   vrRoaming.value = false
-  setTimeout(() => { vrRoaming.value = true }, 60)
+  vrStepIndex.value = 0
+  sceneRef.value?.stopRoaming()
+  window.setTimeout(() => {
+    vrRoaming.value = true
+    if (vrLinked.value) sceneRef.value?.startRoaming()
+    armStepTimer()
+  }, 60)
 }
+
+watch(vrRoaming, armStepTimer, { immediate: true })
+watch(vrSteps, () => {
+  vrStepIndex.value = 0
+})
+
+onBeforeUnmount(() => {
+  window.clearInterval(stepTimer)
+  sceneRef.value?.stopRoaming()
+})
 </script>
 
 <style scoped lang="scss">
-.scene-panel { padding: 0; overflow: hidden; position: relative; }
+.scene-panel {
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+  transition: min-height 0.25s ease;
+  &.tall { min-height: 520px; }
+}
 
 .mini-title { font-size: 12px; color: #aebcd8; margin-bottom: 4px; font-weight: 600; }
 
@@ -245,7 +453,32 @@ function resetVr() {
 .acc-item {
   text-align: center; background: rgba(20, 48, 98, 0.55); border-radius: 6px; padding: 10px 0;
   b { display: block; font-size: 20px; }
-  span { font-size: 11px; color: #7188a8; }
+  span { font-size: 11px; color: #9bb4d4; }
+}
+
+/* 交通事故时间线：覆盖 Element 默认深色字，融入大屏 */
+.acc-panel {
+  :deep(.acc-timeline) {
+    --el-timeline-node-color: rgba(78, 160, 255, 0.45);
+    --el-timeline-node-size: 10px;
+  }
+  :deep(.el-timeline-item__content) {
+    color: #d5e6ff !important;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  :deep(.el-timeline-item__timestamp) {
+    color: #7eb8ff !important;
+    font-size: 12px !important;
+    font-weight: 600;
+  }
+  :deep(.el-timeline-item__node) {
+    background-color: #1a3f78;
+    border-color: #4ea6ff;
+  }
+  :deep(.el-timeline-item__tail) {
+    border-left-color: rgba(78, 160, 255, 0.28);
+  }
 }
 
 .mat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
@@ -256,15 +489,27 @@ function resetVr() {
 }
 
 /* ===== 孪生VR仿真 ===== */
-.vr-panel .panel-title { display: flex; align-items: center; gap: 10px; }
+.vr-panel {
+  .panel-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  &.immersive {
+    margin-top: 12px !important;
+    border-color: rgba(78, 230, 255, 0.55);
+  }
+}
 .vr-tag {
   font-size: 11px; font-weight: 400; color: #4ee6ff;
   background: rgba(78, 230, 255, 0.12); border: 1px solid rgba(78, 230, 255, 0.3);
   padding: 1px 8px; border-radius: 10px;
+  &.live { color: #2ee6a0; border-color: rgba(46, 230, 160, 0.4); background: rgba(46, 230, 160, 0.1); }
 }
 .vr-body { display: flex; flex-direction: column; gap: 10px; }
+.vr-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(220px, 0.9fr);
+  gap: 12px;
+}
 .vr-viewport {
-  position: relative; height: 260px; border-radius: 6px; overflow: hidden;
+  position: relative; height: 280px; border-radius: 6px; overflow: hidden;
   background: #0a1a33; perspective: 700px;
   border: 1px solid rgba(78, 160, 255, 0.3);
 }
@@ -305,6 +550,21 @@ function resetVr() {
   background: repeating-linear-gradient(to top, #e8c34a 0 24px, transparent 24px 56px);
   filter: blur(0.4px);
 }
+.vr-fx { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: screen; opacity: 0.55; }
+.scene-fire .vr-fx {
+  background:
+    radial-gradient(ellipse 40% 30% at 48% 42%, rgba(255, 90, 40, 0.45), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 55% 35%, rgba(255, 180, 60, 0.2), transparent 70%);
+}
+.scene-flood .vr-fx {
+  background: linear-gradient(to top, rgba(40, 140, 255, 0.35) 0%, transparent 45%);
+}
+.scene-traffic .vr-fx {
+  background: repeating-linear-gradient(90deg, transparent 0 40px, rgba(255, 80, 80, 0.12) 40px 48px);
+}
+.scene-patrol .vr-fx {
+  background: radial-gradient(ellipse 60% 40% at 50% 30%, rgba(78, 230, 255, 0.12), transparent 70%);
+}
 .vr-viewport.roaming .vr-road { animation: vrRoad 1.3s linear infinite; }
 .vr-viewport.roaming .vr-lanes { animation: vrLane 1.1s linear infinite; }
 @keyframes vrRoad { from { background-position-y: 0; } to { background-position-y: 180px; } }
@@ -314,6 +574,7 @@ function resetVr() {
   font-size: 11px; color: #4ee6ff;
   background: rgba(8, 24, 48, 0.8); padding: 3px 8px; border-radius: 4px;
   border: 1px solid rgba(78, 230, 255, 0.35);
+  max-width: 70%;
 }
 .vr-compass {
   position: absolute; right: 12px; top: 10px;
@@ -322,16 +583,64 @@ function resetVr() {
   display: flex; align-items: center; justify-content: center;
   color: #4ee6ff; font-weight: 700; font-size: 13px;
 }
+.vr-telemetry {
+  position: absolute; left: 10px; bottom: 10px;
+  display: flex; gap: 8px; flex-wrap: wrap;
+  div {
+    min-width: 72px; padding: 5px 8px; border-radius: 6px;
+    background: rgba(6, 18, 40, 0.78); border: 1px solid rgba(78, 160, 255, 0.28);
+    em { display: block; font-style: normal; font-size: 10px; color: #8eabc8; }
+    b { font-size: 13px; }
+  }
+}
+.vr-side {
+  padding: 10px 12px; background: rgba(20, 48, 98, 0.35); border-radius: 6px;
+  border: 1px solid rgba(78, 160, 255, 0.18);
+}
+.vr-steps {
+  list-style: none; display: flex; flex-direction: column; gap: 6px; margin: 6px 0 0;
+  li {
+    display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8fa8c8;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    i {
+      width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+      font-style: normal; font-size: 10px; background: rgba(78, 160, 255, 0.15); color: #9cc4ef;
+    }
+    &.done { color: #9fd0b8; i { background: rgba(46, 230, 160, 0.18); color: #2ee6a0; } }
+    &.active {
+      color: #e8f3ff; background: rgba(78, 160, 255, 0.16);
+      i { background: #4ea6ff; color: #04122e; font-weight: 700; }
+    }
+  }
+}
+.vr-devices { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.vd-item {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 12px; padding: 6px 8px; border-radius: 6px;
+  background: rgba(8, 24, 48, 0.45); color: #b7cce8;
+  b { font-weight: 700; }
+  &.ok b { color: #2ee6a0; }
+  &.warn b { color: #ffb03a; }
+  &.alarm b { color: #ff5f6b; }
+}
 .vr-controls {
   display: flex; flex-direction: column; gap: 10px;
   padding: 10px 12px; background: rgba(20, 48, 98, 0.35); border-radius: 6px;
 }
 .vr-scene-switch { display: flex; flex-direction: column; gap: 6px; }
 .vs-label { font-size: 11px; color: #7188a8; }
-.vr-btns { display: flex; gap: 8px; }
+.vr-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .vr-desc {
   font-size: 12px; color: #aebcd8; line-height: 1.6;
   padding: 10px 12px; background: rgba(20, 48, 98, 0.3); border-radius: 6px;
   border-left: 2px solid #4ee6ff;
+}
+
+.page-bg.vr-immersive {
+  .vr-viewport { height: 320px; }
+}
+
+@media (max-width: 1100px) {
+  .vr-main { grid-template-columns: 1fr; }
 }
 </style>

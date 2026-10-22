@@ -1,13 +1,10 @@
 import { createApp } from 'vue'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
-import * as Icons from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
 import './styles/global.scss'
 
+// 图标按组件按需引入，不再全量注册 Element Plus Icons（显著缩短首屏解析）
 const app = createApp(App)
-for (const [name, comp] of Object.entries(Icons)) {
-  app.component(name, comp as any)
-}
 app.use(ElementPlus).use(router).mount('#app')

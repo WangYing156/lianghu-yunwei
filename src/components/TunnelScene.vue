@@ -245,8 +245,16 @@
                 >
               </el-collapse-item>
             </el-collapse>
+            <label class="cluster-toggle">
+              <span>点位聚合</span>
+              <el-switch
+                v-model="markerClustering"
+                size="small"
+                @change="onClusteringChange"
+              />
+            </label>
             <p class="layer-help">
-              远景自动聚合 · 点击数字展开<br />BIM 图标近景隐藏 · 告警独立显示
+              开启后远景自动聚合，点击数字展开<br />关闭后始终显示单体图标 · 告警独立显示
             </p>
             <p class="layer-count">
               {{ markerStats.businessCount }} 个业务点 ·
@@ -482,6 +490,16 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'contextmenu', point: ScenePoint): void
   (e: 'select', point: ScenePoint): void
+  /** 选中 BIM 构件（无业务点位映射时仍抛出，供资产页名称匹配） */
+  (
+    e: 'equipment-select',
+    payload: {
+      id: string
+      name: string
+      category?: string
+      properties?: Record<string, string>
+    },
+  ): void
 }>()
 
 /* 底图模式：卫星影像 / 电子地图 / 实景三维 */
@@ -503,6 +521,7 @@ const _initPreset = getSceneVisualPreset(sceneVisualPreset.value)
 const bimOpacity = ref(_initPreset.bimOpacityDefault)
 const partialXray = ref(false)
 const modelPickInfo = ref<ModelPickInfo | null>(null)
+const markerClustering = ref(true)
 const expanded = ref(false)
 const openLayerGroups = ref<string[]>([])
 
@@ -1092,6 +1111,7 @@ const {
   markerStats,
   retryEquipmentMarkers,
   clusterMembers,
+  setMarkerClustering,
   section,
   updateSection,
   resetSection,
@@ -1134,11 +1154,32 @@ const {
     getShowPartialTunnel: () => showPartialTunnel.value,
     getBimBrightness: () => bimBrightness.value,
     onModelSelect: (info) => {
+      if (props.selectable && info) {
+        const byName = props.points.find(
+          (x) => x.name === info.title || info.title.includes(x.name),
+        )
+        if (byName) {
+          modelPickInfo.value = null
+          emit('select', byName)
+          return
+        }
+        modelPickInfo.value = null
+        emit('equipment-select', {
+          id: info.equipmentId || info.title,
+          name: info.title,
+          category: info.properties?.['设备类别'],
+          properties: info.properties,
+        })
+        return
+      }
       modelPickInfo.value = info
     },
   },
 )
 closeScenePopupSafe = closeScenePopup
+function onClusteringChange(enabled: boolean | string | number) {
+  setMarkerClustering(enabled !== false)
+}
 
 watch(
   () => [roaming.active, roaming.loading],
@@ -1170,7 +1211,16 @@ async function locatePoint(id: string) {
   await nextTick()
   if (!disposed) focusDeviceById(id)
 }
-defineExpose({ locatePoint })
+defineExpose({
+  locatePoint,
+  startRoaming: () => {
+    if (!roaming.active && !roaming.loading) void toggleRoaming()
+  },
+  stopRoaming: () => {
+    if (roaming.active || roaming.loading) stopRoaming()
+  },
+  isRoaming: () => roaming.active,
+})
 watch(
   [mapReady, sceneFocusRequest],
   ([ready, request]) => {
@@ -1404,11 +1454,19 @@ function historyOption(p: ScenePoint) {
     box-shadow: inset 0 0 0 1px #92c6d580;
   }
 }
+.cluster-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  color: #d5e6f4;
+  font-size: 12px;
+}
 .layer-help {
   font-size: 10px;
   color: #7e9bae;
   line-height: 1.8;
-  margin: 13px 0 5px;
+  margin: 8px 0 5px;
 }
 .layer-count {
   color: #607e93;
@@ -1753,7 +1811,6 @@ function historyOption(p: ScenePoint) {
   z-index: 40;
   pointer-events: auto;
   min-width: 280px;
-  width: min(320px, calc(100% - 24px));
   max-height: calc(100% - 90px);
   transform: none;
   &__inner {

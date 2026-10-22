@@ -187,7 +187,7 @@ test('只有显式路面透视使道路透明，选择构件为暖色高亮，�
   }
   assert.deepEqual(
     evaluatedColor(options, { name: '摄像机', id: 'e1' }),
-    Color.fromCssColorString('#ffdfa3'),
+    Color.fromCssColorString('#FF7702'),
   )
   assert.deepEqual(
     evaluatedColor(options, { name: '风机', id: 'e2' }),
@@ -205,7 +205,7 @@ test('构件名称/ID 有特殊字符时，样式表达式仍正确匹配', () =
     { selectedEquipmentId: id },
     { id, name: '摄像机' },
   )
-  assert.deepEqual(color, Color.fromCssColorString('#ffdfa3'))
+  assert.deepEqual(color, Color.fromCssColorString('#FF7702'))
 })
 test('138 个真实构件均映射到独立类别/分组，不把合并的灯带/道路伪装为独立设备', () => {
   assert.equal(equipment.length, 138)

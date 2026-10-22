@@ -92,7 +92,20 @@ function symbol(kind: string): string {
     return paths.monitor
   return paths.structure
 }
+function pinFill(kind: string, status: string, selected: boolean): string {
+  if (selected) return '#FF7702'
+  if (status === 'alarm') return '#FF4D5E'
+  if (status === 'warn') return '#FF9F1A'
+  if (status === 'offline') return '#7C8B99'
+  if (/camera|dome|infoBoard|laneInd|speaker|vehicleDet/.test(kind)) return '#2F9BFF'
+  if (/fan|vent|damper|pump|lamp|firePump|fireValve/.test(kind)) return '#14C8B8'
+  if (/water|covi|wind|illum|smoke|heat|flame|Sensor/.test(kind)) return '#3DCC78'
+  if (/stress|corrosion|bolt|pressure|waterpress|disease|complaint/.test(kind))
+    return '#F0A202'
+  return '#7C93FF'
+}
 const cache = new Map<string, string>()
+/** 设备总览钉：分类色水滴 + 白图标 + 状态角标，告警/预警带光晕。 */
 export function markerSymbolUrl(
   kind: string,
   status = 'bim',
@@ -100,16 +113,22 @@ export function markerSymbolUrl(
 ): string {
   const key = `${kind}|${status}|${selected}`
   if (cache.has(key)) return cache.get(key)!
-  const color = selected
-    ? '#ffdfa3'
-    : status === 'alarm'
-      ? '#ff757d'
+  const fill = pinFill(kind, status, selected)
+  const halo =
+    status === 'alarm'
+      ? `<circle cx="24" cy="22" r="20" fill="${fill}" fill-opacity=".16"/><circle cx="24" cy="22" r="17" fill="none" stroke="${fill}" stroke-opacity=".45" stroke-width="1.2"/>`
+      : status === 'warn' || selected
+        ? `<circle cx="24" cy="22" r="18" fill="${fill}" fill-opacity=".12"/>`
+        : ''
+  const badge =
+    status === 'alarm'
+      ? `<circle cx="36" cy="8" r="6" fill="#FF4D5E" stroke="#fff" stroke-width="1.2"/><text x="36" y="10.2" text-anchor="middle" fill="#fff" font-size="8" font-family="Arial,sans-serif" font-weight="700">!</text>`
       : status === 'warn'
-        ? '#efb66e'
+        ? `<circle cx="36" cy="8" r="6" fill="#FF9F1A" stroke="#fff" stroke-width="1.2"/><text x="36" y="10.2" text-anchor="middle" fill="#1a1200" font-size="8" font-family="Arial,sans-serif" font-weight="700">!</text>`
         : status === 'offline'
-          ? '#8398ab'
-          : '#9bc6da'
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#0b2030" fill-opacity=".96" stroke="${color}" stroke-width="${selected ? 2 : 1.3}"/><g transform="translate(4 4)" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${symbol(kind)}</g></svg>`
+          ? `<circle cx="36" cy="8" r="5" fill="#9AA8B5" stroke="#fff" stroke-width="1"/>`
+          : ''
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="60" viewBox="0 0 48 60">${halo}<ellipse cx="24" cy="55" rx="7" ry="2.4" fill="#041018" fill-opacity=".35"/><path d="M24 2.5c-9.6 0-17.4 7.5-17.4 16.8C6.6 30.2 24 50.5 24 50.5S41.4 30.2 41.4 19.3C41.4 10 33.6 2.5 24 2.5z" fill="${fill}" stroke="#ffffff" stroke-opacity=".88" stroke-width="1.3"/><circle cx="24" cy="19.2" r="10.2" fill="#062033" fill-opacity=".28"/><g transform="translate(12 7.2)" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${symbol(kind)}</g>${badge}</svg>`
   const url = `data:image/svg+xml,${encodeURIComponent(svg)}`
   cache.set(key, url)
   return url
@@ -117,7 +136,7 @@ export function markerSymbolUrl(
 export function clusterSymbolUrl(count: number): string {
   const key = `cluster|${count}`
   if (cache.has(key)) return cache.get(key)!
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 48 48"><circle cx="24" cy="24" r="22" fill="#123549" fill-opacity=".55" stroke="#76aec6" stroke-opacity=".3"/><circle cx="24" cy="24" r="17" fill="#0e2839" stroke="#91c5d7" stroke-width="1.3"/><text x="24" y="28.5" fill="#d9edf4" font-size="${count > 99 ? 12 : 14}" font-family="Arial,sans-serif" font-weight="600" text-anchor="middle">${count}</text></svg>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 48 48"><defs><radialGradient id="g" cx="50%" cy="40%" r="60%"><stop offset="0%" stop-color="#1a3d56"/><stop offset="100%" stop-color="#0b1f2e"/></radialGradient></defs><circle cx="24" cy="24" r="22" fill="#123549" fill-opacity=".4" stroke="#76aec6" stroke-opacity=".28"/><circle cx="24" cy="24" r="16.5" fill="url(#g)" stroke="#9fd0e4" stroke-width="1.4"/><text x="24" y="28.2" fill="#e7f6fb" font-size="${count > 99 ? 11 : 13}" font-family="Arial,sans-serif" font-weight="700" text-anchor="middle">${count}</text></svg>`
   const url = `data:image/svg+xml,${encodeURIComponent(svg)}`
   cache.set(key, url)
   return url

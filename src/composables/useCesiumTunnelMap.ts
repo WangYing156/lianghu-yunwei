@@ -36,7 +36,13 @@ import {
   type SceneMarkerEntity,
   type ClusterMarkerPick,
 } from './useSceneMarkers'
-import { modelColorConditions } from '../utils/modelMaterials'
+import {
+  createBimFresnelShader,
+  createSelectedFresnelShader,
+  modelColorConditions,
+  SELECTED_TINT_CSS,
+  updateBimFresnelAlpha,
+} from '../utils/modelMaterials'
 import { pointFocusRectangle } from '../utils/sceneCamera'
 import { isPriorityMarker } from '../utils/markerSymbols'
 import { cameraForPoint } from '../config/cctvGallery'
@@ -259,6 +265,12 @@ export function useCesiumTunnelMap(
   let loadedPresetId: SceneVisualPresetId | null = null
   let activeEnvironmentId: SceneEnvironmentId = 'default'
   const xrayRestoresMap = new Map<Cesium.Cesium3DTileset, () => void>()
+  const bimFresnelShaders = new WeakMap<
+    Cesium.Cesium3DTileset,
+    Cesium.CustomShader
+  >()
+  let selectedFresnelShader: Cesium.CustomShader | null = null
+  let clusterExploded = false
   let orthoLayerRef: Cesium.ImageryLayer | null = null
   let clickPulseDispose: (() => void) | null = null
   let selectedFeature: {
@@ -288,10 +300,17 @@ export function useCesiumTunnelMap(
   const clusterMembers = shallowRef<
     { id: string; name: string; source: string }[]
   >([])
-  const modelSection = useModelSection(() => {
-    const v = viewer.value
-    if (v && !v.isDestroyed()) v.scene.requestRender()
-  })
+  const modelSection = useModelSection(
+    () => {
+      const v = viewer.value
+      if (v && !v.isDestroyed()) v.scene.requestRender()
+    },
+    () => viewer.value,
+  )
+  let markerClustering = true
+  let selectionGlow: Cesium.Entity | null = null
+  /** 仅作占位，避免旧逻辑残留；选中发光不再启用全屏 bloom */
+  let bloomRestore: { enabled: boolean; brightness: number } | null = null
   const markers = useSceneMarkers({
     getViewer: () => viewer.value,
     getRoute: () => routeData.value,
@@ -583,7 +602,9 @@ export function useCesiumTunnelMap(
         duration: motionQuery.matches ? 0 : 0.65,
       })
     }
-    if (options?.buildPopupContent) openFloatingPopup(p, target)
+    // 资产页等选择模式只走业务弹窗，不再叠一层场景浮窗
+    if (!options?.onDeviceSelect && options?.buildPopupContent)
+      openFloatingPopup(p, target)
   }
 
   function openFloatingPopup(p: MapDevicePoint, position: Cesium.Cartesian3) {
@@ -713,10 +734,16 @@ export function useCesiumTunnelMap(
     markers.clearEquipment()
     while (tunnelTilesets.length) {
       const ts = tunnelTilesets.pop()!
+      try {
+        ts.customShader = undefined
+      } catch {
+        /* ignore */
+      }
       v.scene.primitives.remove(ts)
       if (!ts.isDestroyed()) ts.destroy()
     }
     xrayRestoresMap.clear()
+    selectedFresnelShader = null
     tilesetsLoading = null
   }
 
@@ -732,6 +759,12 @@ export function useCesiumTunnelMap(
     try {
       const tileset = await Cesium.Cesium3DTileset.fromUrl(url, {
         maximumScreenSpaceError,
+        // 先出粗模，避免首屏卡在深层瓦片
+        skipLevelOfDetail: true,
+        immediatelyLoadDesiredLevelOfDetail: false,
+        loadSiblings: false,
+        cullWithChildrenBounds: true,
+        progressiveResolutionHeightFraction: 0.35,
       })
       if (v.isDestroyed() || viewer.value !== v) {
         tileset.destroy()
@@ -745,6 +778,7 @@ export function useCesiumTunnelMap(
         void modelSection.register(tileset, role, url)
         if (role === 'partial') void markers.loadEquipment(tileset)
       }
+      v.scene.requestRender()
       return tileset
     } catch (err) {
       if (import.meta.env.DEV)
@@ -758,9 +792,18 @@ export function useCesiumTunnelMap(
     sse: number,
   ): Promise<number> {
     let ok = 0
+    // 倾斜体量大：串行后台加载，且略放宽 SSE，优先保交互
+    const obliqueSse = Math.max(sse, 16)
     for (const path of OBLIQUE_TILESET_PATHS) {
-      const ts = await loadOneTileset(v, path, sse, 'oblique')
-      if (ts) ok++
+      if (v.isDestroyed() || viewer.value !== v) break
+      const ts = await loadOneTileset(v, path, obliqueSse, 'oblique')
+      if (ts) {
+        ok++
+        applyTilesetStyles()
+        v.scene.requestRender()
+      }
+      // 让出主线程，避免连续解码卡住 UI
+      await new Promise((r) => setTimeout(r, 0))
     }
     return ok
   }
@@ -815,7 +858,7 @@ export function useCesiumTunnelMap(
       }
       if (role === 'bim' || role === 'partial') {
         // lightColor 必须是 Cartesian3（RGB），赋 Color 会在 HDR 下触发 model_lightColorHdr 非法；
-        // 用中性白光提亮，材质染色交给 style.color，避免双重染色。
+        // 用中性白光提亮，材质染色交给 style.color / CustomShader，避免双重染色。
         // 施工透明 / 竣工 X光时额外提亮，保证透视下仍醒目。
         const boost =
           (role === 'bim' && bimAlpha < 0.999) ||
@@ -835,6 +878,29 @@ export function useCesiumTunnelMap(
         } catch {
           /* older Cesium */
         }
+      }
+      // 施工模型：#0095FF×4 + Fresnel；竣工选中：#FF7702×4 + Fresnel
+      try {
+        if (role === 'bim') {
+          let shader = bimFresnelShaders.get(ts)
+          if (!shader) {
+            shader = createBimFresnelShader(bimAlpha)
+            bimFresnelShaders.set(ts, shader)
+          } else {
+            updateBimFresnelAlpha(shader, bimAlpha)
+          }
+          ts.customShader = shader
+        } else if (role === 'partial') {
+          if (selectedEquipmentId) {
+            if (!selectedFresnelShader)
+              selectedFresnelShader = createSelectedFresnelShader()
+            ts.customShader = selectedFresnelShader
+          } else {
+            ts.customShader = undefined
+          }
+        }
+      } catch {
+        /* CustomShader 不可用时降级为 style */
       }
       ts.colorBlendMode = Cesium.Cesium3DTileColorBlendMode.HIGHLIGHT
       ts.colorBlendAmount = role === 'partial' ? 0.14 : 0.08
@@ -1073,18 +1139,7 @@ export function useCesiumTunnelMap(
       try {
         detachAllTunnelTilesets(v)
         loadedPresetId = presetId
-        let obliqueCount = 0
-        if (preset.loadOblique) {
-          obliqueCount = await loadObliqueRoots(v, preset.obliqueSse)
-          if (obliqueCount === 0) {
-            console.warn(
-              '[tunnel] 倾斜 tileset 未加载，请检查 public/三维数据/两湖倾斜/*/tileset.json',
-            )
-          }
-        }
-        if (preset.loadBim && (options?.getShowFullTunnel?.() ?? true)) {
-          await loadOneTileset(v, BIM_TILESET_PATH, preset.bimSse, 'bim')
-        }
+        // 1) 先加载竣工段：设备与默认视角都依赖它，首屏最快可见
         if (preset.loadPartial && (options?.getShowPartialTunnel?.() ?? true)) {
           await loadOneTileset(
             v,
@@ -1102,6 +1157,36 @@ export function useCesiumTunnelMap(
           console.warn('[tunnel] setBimBrightness 失败', err)
         }
         v.scene.requestRender()
+        // 竣工段已就绪：后续施工/倾斜不阻塞 ensure 返回，首屏可立即取景交互
+        const continueHeavy = async () => {
+          if (preset.loadBim && (options?.getShowFullTunnel?.() ?? true)) {
+            await loadOneTileset(v, BIM_TILESET_PATH, preset.bimSse, 'bim')
+            if (!v.isDestroyed() && viewer.value === v) {
+              applyTilesetStyles()
+              v.scene.requestRender()
+            }
+          }
+          if (preset.loadOblique) {
+            const obliqueCount = await loadObliqueRoots(v, preset.obliqueSse)
+            if (obliqueCount === 0 && import.meta.env.DEV) {
+              console.warn(
+                '[tunnel] 倾斜 tileset 未加载，请检查 public/三维数据/两湖倾斜/*/tileset.json',
+              )
+            }
+            if (!v.isDestroyed() && viewer.value === v) {
+              applyTilesetStyles()
+              v.scene.requestRender()
+            }
+          }
+        }
+        const schedule =
+          typeof requestIdleCallback === 'function'
+            ? (cb: () => void) => requestIdleCallback(cb, { timeout: 1200 })
+            : (cb: () => void) => window.setTimeout(cb, 0)
+        schedule(() => {
+          if (v.isDestroyed() || viewer.value !== v) return
+          void continueHeavy()
+        })
       } catch (err) {
         console.warn('[tunnel] ensureTunnelTilesets 失败', err)
       } finally {
@@ -1249,8 +1334,9 @@ export function useCesiumTunnelMap(
   function highlightTilesetPick(feature: Cesium.Cesium3DTileFeature) {
     clearFeatureHighlight()
     selectedFeature = { feature, color: Cesium.Color.clone(feature.color) }
-    // 点击高亮：亮青描边感，突出选中构件
-    feature.color = Cesium.Color.fromCssColorString('#a5f3fc').withAlpha(1.0)
+    // 点击高亮：#FF7702 × 4（HDR）暖橙，与设备选中材质一致
+    const base = Cesium.Color.fromCssColorString(SELECTED_TINT_CSS)
+    feature.color = new Cesium.Color(base.red * 4, base.green * 4, base.blue * 4, 1)
   }
 
   function emitModelPickInfo(
@@ -1335,11 +1421,51 @@ export function useCesiumTunnelMap(
     setEntityVisible(deviceEntities, visible)
   }
 
+  function clearSelectionGlow() {
+    const v = viewer.value
+    if (selectionGlow && v && !v.isDestroyed()) v.entities.remove(selectionGlow)
+    selectionGlow = null
+    bloomRestore = null
+  }
+
+  function showSelectionGlow(position: Cesium.Cartesian3) {
+    const v = viewer.value
+    if (!v || v.isDestroyed()) return
+    clearSelectionGlow()
+    // 静态光斑 + 材质高亮即可；避免 bloom / CallbackProperty 持续刷帧
+    selectionGlow = v.entities.add({
+      position,
+      billboard: {
+        image: `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs><radialGradient id="g"><stop offset="0%" stop-color="#FF7702" stop-opacity=".95"/><stop offset="42%" stop-color="#FF7702" stop-opacity=".4"/><stop offset="100%" stop-color="#FF7702" stop-opacity="0"/></radialGradient></defs><circle cx="64" cy="64" r="60" fill="url(#g)"/></svg>')}`,
+        width: 92,
+        height: 92,
+        color: Cesium.Color.WHITE.withAlpha(0.95),
+        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    })
+    v.scene.requestRender()
+  }
+
+  function setMarkerClustering(enabled: boolean) {
+    markerClustering = enabled
+    clusterExploded = false
+    markers.setClustering(enabled)
+  }
+
+  function restoreClusterAggregation() {
+    if (!clusterExploded) return
+    markers.setClustering(markerClustering)
+    clusterExploded = false
+  }
+
   function closeScenePopup() {
     focusedDeviceId = null
     clusterMembers.value = []
+    restoreClusterAggregation()
     const hadEquipment = !!selectedEquipmentId
     selectedEquipmentId = ''
+    clearSelectionGlow()
     clearFeatureHighlight()
     if (hadEquipment && !modelRoaming.state.active) applyTilesetStyles()
     options?.onModelSelect?.(null)
@@ -1399,6 +1525,7 @@ export function useCesiumTunnelMap(
     ts.show = true
     applyTilesetStyles()
     syncDeviceGraphics()
+    showSelectionGlow(new Cesium.Cartesian3(...item.center))
     emitEquipmentInfo(item)
     const target = new Cesium.Cartesian3(...item.center)
     const up = Cesium.Cartesian3.normalize(
@@ -1473,7 +1600,21 @@ export function useCesiumTunnelMap(
   function focusCluster(entities: SceneMarkerEntity[]) {
     const v = viewer.value
     if (!v || v.isDestroyed()) return
-    closeScenePopup()
+    // 先收起上一次聚合，再展开本次；避免 close 把刚写入的成员清掉
+    restoreClusterAggregation()
+    closeFloatingPopup()
+    focusedDeviceId = null
+    const hadEquipment = !!selectedEquipmentId
+    selectedEquipmentId = ''
+    clearSelectionGlow()
+    clearFeatureHighlight()
+    if (hadEquipment && !modelRoaming.state.active) applyTilesetStyles()
+    options?.onModelSelect?.(null)
+    devicePopupAnchor.value = null
+    floatingPosition = null
+    moveHandler?.()
+    moveHandler = null
+    options?.onPopupClosed?.()
     clusterMembers.value = entities.map((entity) => ({
       id: entity.__equipmentId
         ? `bim:${entity.__equipmentId}`
@@ -1481,6 +1622,12 @@ export function useCesiumTunnelMap(
       name: entity.name ?? '设施点位',
       source: entity.__equipmentId ? '真实 BIM' : '模拟业务点',
     }))
+    // 点击聚合后临时关闭聚类，近景直接露出单体图标与 BIM 构件
+    const ds = markers.normalSource
+    if (ds) {
+      ds.clustering.enabled = false
+      clusterExploded = true
+    }
     const points = entities
       .map((e) => e.position?.getValue(v.clock.currentTime))
       .filter((p): p is Cesium.Cartesian3 => !!p)
@@ -1493,7 +1640,7 @@ export function useCesiumTunnelMap(
         Cesium.Math.toDegrees(point.longitude),
         Cesium.Math.toDegrees(point.latitude),
         v.canvas.clientWidth / Math.max(1, v.canvas.clientHeight),
-        Math.max(160, sphere.radius * 2.5),
+        Math.max(60, sphere.radius * 1.4),
       )
       v.camera.flyTo({
         destination: Cesium.Rectangle.fromDegrees(...rect),
@@ -1501,14 +1648,27 @@ export function useCesiumTunnelMap(
       })
     } else {
       v.camera.flyToBoundingSphere(sphere, {
-        duration: motionQuery.matches ? 0 : 0.7,
+        duration: motionQuery.matches ? 0 : 0.85,
         offset: new Cesium.HeadingPitchRange(
           v.camera.heading,
-          Cesium.Math.toRadians(-30),
-          Math.max(85, sphere.radius * 2.8),
+          Cesium.Math.toRadians(-28),
+          Math.max(28, Math.min(70, sphere.radius * 1.65 + 18)),
         ),
+        complete: () => {
+          // 再拉近一档，确保已脱离聚合像素阈值
+          if (v.isDestroyed()) return
+          v.camera.flyToBoundingSphere(sphere, {
+            duration: motionQuery.matches ? 0 : 0.45,
+            offset: new Cesium.HeadingPitchRange(
+              v.camera.heading,
+              Cesium.Math.toRadians(-22),
+              Math.max(22, sphere.radius * 1.2 + 12),
+            ),
+          })
+        },
       })
     }
+    v.scene.requestRender()
   }
 
   function viewEquipmentVideo(id: string) {
@@ -1694,7 +1854,9 @@ export function useCesiumTunnelMap(
       infoBox: false,
       selectionIndicator: false,
       shouldAnimate: false,
-      requestRenderMode: false,
+      // 按需渲染：静止时不刷帧，大幅降低打开后的卡顿感
+      requestRenderMode: true,
+      maximumRenderTimeChange: Infinity,
       creditContainer: creditHost,
       contextOptions: {
         webgl: { alpha: false, antialias: true },
@@ -1716,21 +1878,14 @@ export function useCesiumTunnelMap(
       Number.POSITIVE_INFINITY
     v.scene.screenSpaceCameraController.enableCollisionDetection = false
     v.scene.highDynamicRange = true
-    v.scene.msaaSamples = 4
+    v.scene.msaaSamples = 2
     v.scene.postProcessStages.fxaa.enabled = true
-    v.useBrowserRecommendedResolution = false
-    v.resolutionScale =
-      Math.min(window.devicePixelRatio || 1, 1.5) /
-      (window.devicePixelRatio || 1)
-    v.targetFrameRate = 45
+    // 使用浏览器推荐分辨率，避免高 DPR 机器首帧过重
+    v.useBrowserRecommendedResolution = true
+    v.targetFrameRate = 30
+    // AO 代价高，默认关闭；需要氛围时再开
     const ao = v.scene.postProcessStages.ambientOcclusion
-    ao.enabled = Cesium.PostProcessStageLibrary.isAmbientOcclusionSupported(
-      v.scene,
-    )
-    ao.uniforms.intensity = 1.2
-    ao.uniforms.lengthCap = 0.12
-    ao.uniforms.stepSize = 1.0
-    ao.uniforms.blurStepSize = 1.0
+    ao.enabled = false
 
     viewer.value = v
     await markers.initialize(v)
@@ -1761,8 +1916,9 @@ export function useCesiumTunnelMap(
 
     syncDeviceGraphics()
     applyPresentationMode()
-    try {
-      if (initialViewMode !== '2d') {
+      try {
+        if (initialViewMode !== '2d') {
+        // 竣工段就绪即可取景；施工/倾斜在后台继续补齐
         await ensureTunnelTilesets(v)
         if (
           version !== lifecycleVersion ||
@@ -1771,7 +1927,9 @@ export function useCesiumTunnelMap(
         )
           return
         applyPresentationMode()
+        // 首屏直接落到竣工段，不做飞行动画，减少等待
         await flyToTilesetFocus(v, 0)
+        v.scene.requestRender()
       } else {
         await resetMapView(0)
       }
@@ -1881,6 +2039,7 @@ export function useCesiumTunnelMap(
     focusedDeviceId = null
     activeEnvironmentId = 'default'
     stopFlowLoop()
+    clearSelectionGlow()
     modelRoaming.stop(false)
     modelSection.clear()
     markers.destroy()
@@ -1970,6 +2129,7 @@ export function useCesiumTunnelMap(
       if (ts) void markers.loadEquipment(ts)
     },
     clusterMembers,
+    setMarkerClustering,
     section: modelSection.state,
     updateSection: modelSection.update,
     resetSection: modelSection.reset,
