@@ -1,9 +1,18 @@
 <template>
-  <section class="roaming-panel" aria-label="竣工模型内部巡游控制" @pointerdown.stop @wheel.stop>
+  <section
+    class="roaming-panel"
+    aria-label="竣工模型内部巡游控制"
+    @pointerdown.stop
+    @wheel.stop
+  >
     <div class="roaming-head">
       <div class="roaming-title">
-        <span class="roaming-indicator" :class="{ playing: state.playing }"></span
-        ><strong>内部巡游</strong><span class="roaming-subtitle">AS-BUILT INSPECTION</span>
+        <span
+          class="roaming-indicator"
+          :class="{ playing: state.playing }"
+        ></span
+        ><strong>内部巡游</strong
+        ><span class="roaming-subtitle">AS-BUILT INSPECTION</span>
       </div>
       <button
         class="roaming-icon"
@@ -17,7 +26,13 @@
     </div>
     <div v-if="state.error" class="roaming-message" role="alert">
       <p>{{ state.error }}</p>
-      <button class="roaming-button primary" type="button" @click="emit('start')">重新尝试</button>
+      <button
+        class="roaming-button primary"
+        type="button"
+        @click="emit('start')"
+      >
+        重新尝试
+      </button>
     </div>
     <div v-else-if="state.loading" class="roaming-message" role="status">
       <span class="loading-dot"></span>正在准备竣工模型与设备目录…
@@ -27,7 +42,9 @@
         <el-radio-group
           :model-value="state.layer"
           size="small"
-          @update:model-value="(value) => emit('layer', value as RoamingState['layer'])"
+          @update:model-value="
+            (value) => emit('layer', value as RoamingState['layer'])
+          "
         >
           <el-radio-button value="lower">下层通道</el-radio-button
           ><el-radio-button value="upper">上层通道</el-radio-button>
@@ -46,15 +63,20 @@
           step="1"
           :value="Math.round(state.progress * 1000)"
           :style="{ '--progress': `${state.progress * 100}%` }"
-          @input="emit('seek', Number(($event.target as HTMLInputElement).value) / 1000)"
+          @input="
+            emit(
+              'seek',
+              Number(($event.target as HTMLInputElement).value) / 1000,
+            )
+          "
       /></label>
       <div class="roaming-controls">
         <button
           type="button"
           class="roaming-icon"
-          aria-label="回到路线起点"
-          title="回到路线起点"
-          @click="emit('seek', state.direction === 1 ? 0 : 1)"
+          aria-label="回到巡游入口端"
+          title="回到当前路线末端，从入口朝内部巡游"
+          @click="emit('entry')"
         >
           <el-icon><RefreshLeft /></el-icon>
         </button>
@@ -64,18 +86,27 @@
           :aria-label="state.playing ? '暂停巡游' : '继续巡游'"
           @click="emit('play')"
         >
-          <el-icon><VideoPause v-if="state.playing" /><VideoPlay v-else /></el-icon
+          <el-icon
+            ><VideoPause v-if="state.playing" /><VideoPlay v-else /></el-icon
           >{{ state.playing ? '暂停巡游' : '继续巡游' }}
         </button>
-        <button type="button" class="roaming-button" title="切换巡游方向" @click="emit('reverse')">
-          <el-icon><Switch /></el-icon>{{ state.direction === 1 ? '正向' : '反向' }}
+        <button
+          type="button"
+          class="roaming-button"
+          title="切换巡游方向"
+          @click="emit('reverse')"
+        >
+          <el-icon><Switch /></el-icon
+          >{{ state.direction === -1 ? '向起点' : '向终点' }}
         </button>
         <label class="speed-label"
           ><span class="sr-only">巡游速度</span
           ><select
             :value="state.speed"
             aria-label="巡游速度"
-            @change="emit('speed', Number(($event.target as HTMLSelectElement).value))"
+            @change="
+              emit('speed', Number(($event.target as HTMLSelectElement).value))
+            "
           >
             <option :value="0.8">慢行 0.8 m/s</option>
             <option :value="2">步行 2 m/s</option>
@@ -107,7 +138,9 @@
             />
           </el-option-group>
         </el-select>
-        <span class="equipment-count">{{ equipment.length }}<small>构件</small></span>
+        <span class="equipment-count"
+          >{{ equipment.length }}<small>构件</small></span
+        >
       </div>
       <div class="roaming-footer">
         <el-checkbox
@@ -115,6 +148,12 @@
           size="small"
           @update:model-value="(value) => emit('dim', !!value)"
           >结构透视</el-checkbox
+        >
+        <el-checkbox
+          :model-value="state.roadXray"
+          size="small"
+          @update:model-value="emit('road', !!$event)"
+          >路面透视</el-checkbox
         >
         <details class="roaming-adjust">
           <summary>机位微调</summary>
@@ -127,7 +166,12 @@
                 max="4.2"
                 step="0.1"
                 :value="state.eyeHeight"
-                @input="emit('height', Number(($event.target as HTMLInputElement).value))" /></label
+                @input="
+                  emit(
+                    'height',
+                    Number(($event.target as HTMLInputElement).value),
+                  )
+                " /></label
             ><label
               >横向偏移 {{ state.lateralOffset.toFixed(1) }} m<input
                 aria-label="巡游横向偏移"
@@ -136,7 +180,12 @@
                 max="3"
                 step="0.1"
                 :value="state.lateralOffset"
-                @input="emit('offset', Number(($event.target as HTMLInputElement).value))"
+                @input="
+                  emit(
+                    'offset',
+                    Number(($event.target as HTMLInputElement).value),
+                  )
+                "
             /></label>
           </div>
         </details>
@@ -148,12 +197,24 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Aim, Close, RefreshLeft, Switch, VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import {
+  Aim,
+  Close,
+  RefreshLeft,
+  Switch,
+  VideoPause,
+  VideoPlay,
+} from '@element-plus/icons-vue'
 import type { ModelEquipment } from '../utils/modelEquipment'
 import type { RoamingState } from '../types/roaming'
-const props = defineProps<{ state: RoamingState; equipment: ModelEquipment[] }>()
+const props = defineProps<{
+  state: RoamingState
+  equipment: ModelEquipment[]
+}>()
 const emit = defineEmits<{
   start: []
+  entry: []
+  road: [value: boolean]
   exit: []
   play: []
   reverse: []
@@ -252,7 +313,11 @@ const groups = computed(() =>
     height: 3px;
     border-radius: 2px;
     cursor: pointer;
-    background: linear-gradient(90deg, #70cbbd var(--progress), #28445a var(--progress));
+    background: linear-gradient(
+      90deg,
+      #70cbbd var(--progress),
+      #28445a var(--progress)
+    );
     &::-webkit-slider-thumb {
       appearance: none;
       height: 10px;

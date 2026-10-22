@@ -29,7 +29,7 @@ const STATUS_CLASS: Record<MapPopupPayload['statusTone'], string> = {
   ok: 'is-ok',
   warn: 'is-warn',
   alarm: 'is-alarm',
-  offline: 'is-offline'
+  offline: 'is-offline',
 }
 
 function esc(text: string): string {
@@ -49,7 +49,7 @@ type PopupRoot = HTMLDivElement & {
 /** 构建与平台玻璃态一致的 Popup DOM */
 export function createMapPopupElement(
   data: MapPopupPayload,
-  actions?: { onClose?: () => void; onVideo?: () => void }
+  actions?: { onClose?: () => void; onVideo?: () => void },
 ): HTMLDivElement {
   const root = document.createElement('div') as PopupRoot
   root.className = 'pd-shell pd-shell--popup'
@@ -70,7 +70,7 @@ export function createMapPopupElement(
           <div class="pd-val">${esc(data.stake)}</div>
         </div>
         <div class="pd-cell">
-          <div class="pd-label">实时数值</div>
+          <div class="pd-label">数值 / 状态</div>
           <div class="pd-val">${esc(data.value || '—')}</div>
         </div>
         <div class="pd-cell">
@@ -97,7 +97,7 @@ export function createMapPopupElement(
     </div>
     <div class="pd-foot">
       <button type="button" class="pd-btn pd-btn--ghost" data-action="close">关闭</button>
-      <button type="button" class="pd-btn pd-btn--primary" data-action="video">调取实时视频</button>
+      ${actions?.onVideo ? '<button type="button" class="pd-btn pd-btn--primary" data-action="video">查看监控画面</button>' : ''}
     </div>
   `
 
@@ -110,7 +110,7 @@ export function createMapPopupElement(
       ;(e as MouseEvent).stopImmediatePropagation?.()
       fn()
     }
-    btn.addEventListener('pointerdown', handler)
+    btn.addEventListener('pointerdown', (event) => event.stopPropagation())
     btn.addEventListener('click', handler)
   }
   bindAction('close', actions?.onClose)
@@ -123,7 +123,9 @@ export function createMapPopupElement(
 export function mountMapPopupChart(root: HTMLElement | null | undefined) {
   const host = root as PopupRoot | null
   if (!host?.__chartData?.history?.length) return
-  const chartHost = host.querySelector('[data-chart-host]') as HTMLDivElement | null
+  const chartHost = host.querySelector(
+    '[data-chart-host]',
+  ) as HTMLDivElement | null
   if (!chartHost) return
 
   const data = host.__chartData
@@ -136,15 +138,15 @@ export function mountMapPopupChart(root: HTMLElement | null | undefined) {
       backgroundColor: 'rgba(12, 32, 68, 0.96)',
       borderColor: 'rgba(78, 160, 255, 0.4)',
       textStyle: { color: '#e8f4ff', fontSize: 11 },
-      axisPointer: { lineStyle: { color: 'rgba(78, 230, 255, 0.5)' } }
+      axisPointer: { lineStyle: { color: 'rgba(78, 230, 255, 0.5)' } },
     },
     xAxis: {
       type: 'category',
       boundaryGap: false,
-      data: data.history!.map(x => x.time),
+      data: data.history!.map((x) => x.time),
       axisLabel: { fontSize: 9, color: '#8fa8c8' },
       axisLine: { lineStyle: { color: 'rgba(120, 170, 230, 0.35)' } },
-      axisTick: { show: false }
+      axisTick: { show: false },
     },
     yAxis: {
       type: 'value',
@@ -153,7 +155,7 @@ export function mountMapPopupChart(root: HTMLElement | null | undefined) {
       nameGap: 6,
       nameTextStyle: { fontSize: 9, color: '#8fa8c8', align: 'left' },
       axisLabel: { fontSize: 9, color: '#8fa8c8' },
-      splitLine: { lineStyle: { color: 'rgba(120, 170, 230, 0.12)' } }
+      splitLine: { lineStyle: { color: 'rgba(120, 170, 230, 0.12)' } },
     },
     series: [
       {
@@ -161,21 +163,24 @@ export function mountMapPopupChart(root: HTMLElement | null | undefined) {
         smooth: true,
         symbol: 'circle',
         symbolSize: 5,
-        data: data.history!.map(x => x.value),
+        data: data.history!.map((x) => x.value),
         lineStyle: { color: '#4ee6ff', width: 2 },
         itemStyle: { color: '#4ee6ff', borderColor: '#bdf6ff', borderWidth: 1 },
         areaStyle: {
           color: {
             type: 'linear',
-            x: 0, y: 0, x2: 0, y2: 1,
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
             colorStops: [
               { offset: 0, color: 'rgba(78, 230, 255, 0.28)' },
-              { offset: 1, color: 'rgba(78, 230, 255, 0.02)' }
-            ]
-          }
-        }
-      }
-    ]
+              { offset: 1, color: 'rgba(78, 230, 255, 0.02)' },
+            ],
+          },
+        },
+      },
+    ],
   })
 
   let tries = 0

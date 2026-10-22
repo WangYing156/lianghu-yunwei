@@ -2,7 +2,7 @@
   <div class="asset-root map-layout-full">
     <!-- 三维场景为主体（铺满） -->
     <div class="asset-scene">
-      <MarkPoint :index="1" doc-key="asset.scene" />
+
       <TunnelScene map-mode selectable :points="points" height="100%" @contextmenu="onAssetContext" @select="onAssetSelect" />
       <!-- 操作提示 -->
       <div class="ctx-hint">💡 点击左侧资产列表，或点击 / 右键三维模型构件，弹出关联资料面板</div>
@@ -11,7 +11,6 @@
     <!-- 左侧资产列表（按图层子项分类） -->
     <div class="asset-side">
       <div class="panel">
-        <MarkPoint :index="2" doc-key="asset.library" />
         <div class="panel-title">
           资产列表
           <span class="pt-count">共 {{ assetList.length }} 项</span>
@@ -211,7 +210,6 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Edit, Tools, Document, ArrowRight, Search, Close } from '@element-plus/icons-vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
-import MarkPoint from '../components/MarkPoint.vue'
 
 /* 资产点位（隧道内各类设备） */
 const points: ScenePoint[] = [

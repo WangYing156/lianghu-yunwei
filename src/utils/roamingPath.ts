@@ -5,8 +5,10 @@ export interface RoamingPath {
   cumulative: number[]
   length: number
 }
-const distance = (a: Point3, b: Point3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
-export const clamp01 = (n: number) => Math.max(0, Math.min(1, Number.isFinite(n) ? n : 0))
+const distance = (a: Point3, b: Point3) =>
+  Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+export const clamp01 = (n: number) =>
+  Math.max(0, Math.min(1, Number.isFinite(n) ? n : 0))
 
 export function createRoamingPath(input: readonly Point3[]): RoamingPath {
   const points = input
@@ -40,7 +42,11 @@ export function sampleRoamingPath(
   ) as [number, number, number]
   const magnitude = Math.hypot(...tangent) || 1
   return {
-    point: [0, 1, 2].map((k) => a[k] + (b[k] - a[k]) * t) as [number, number, number],
+    point: [0, 1, 2].map((k) => a[k] + (b[k] - a[k]) * t) as [
+      number,
+      number,
+      number,
+    ],
     tangent: tangent.map((v) => v / magnitude) as [number, number, number],
   }
 }
@@ -55,12 +61,15 @@ export function nearestRoamingProgress(
       b = path.points[i]
     const v = b.map((n, k) => n - a[k])
     const squared = v.reduce((sum, n) => sum + n * n, 0)
-    const t = clamp01(v.reduce((sum, n, k) => sum + n * (point[k] - a[k]), 0) / squared)
+    const t = clamp01(
+      v.reduce((sum, n, k) => sum + n * (point[k] - a[k]), 0) / squared,
+    )
     const p = a.map((n, k) => n + v[k] * t) as [number, number, number]
     const dist = distance(p, point)
     if (dist < best.distance)
       best = {
-        progress: (path.cumulative[i - 1] + Math.sqrt(squared) * t) / path.length,
+        progress:
+          (path.cumulative[i - 1] + Math.sqrt(squared) * t) / path.length,
         distance: dist,
       }
   }
@@ -74,8 +83,14 @@ export function advanceRoamingProgress(
   length: number,
   direction: 1 | -1,
 ): number {
-  if (!Number.isFinite(length) || length <= 0 || !Number.isFinite(speed)) return clamp01(progress)
+  if (!Number.isFinite(length) || length <= 0 || !Number.isFinite(speed))
+    return clamp01(progress)
   // 标签页切回时不跨越大段路线。
   const delta = Math.max(0, Math.min(0.1, elapsedSeconds))
   return clamp01(progress + (delta * Math.max(0, speed) * direction) / length)
+}
+
+/** 从校准路线末端朝路径内部入场；每次重入都恢复方向，避免沿用上次的正向状态。 */
+export function createRoamingEntry(): { progress: number; direction: 1 | -1 } {
+  return { progress: 1, direction: -1 }
 }

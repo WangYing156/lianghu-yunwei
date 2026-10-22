@@ -9,6 +9,7 @@ export interface RoamingState {
   eyeHeight: number
   lateralOffset: number
   length: number
+  roadXray: boolean
   dimStructure: boolean
   selectedEquipmentId: string
   error: string

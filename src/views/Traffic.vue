@@ -2,14 +2,12 @@
   <div class="page-bg">
     <!-- 视频点位三维落图 -->
     <div class="panel scene-panel">
-      <MarkPoint :index="1" doc-key="traffic.videomap" />
-      <TunnelScene map-mode resizable :points="points" height="360px" :default-groups="['structure', 'traffic']" />
+      <TunnelScene map-mode resizable :points="points" height="360px" />
     </div>
 
     <div class="grid-2" style="margin-top: 16px">
       <!-- 视频墙 -->
       <div class="panel">
-        <MarkPoint :index="2" doc-key="traffic.videowall" />
         <div class="panel-title" style="margin-bottom:4px">视频墙
           <el-radio-group v-model="wallLayout" size="small">
             <el-radio-button :value="4">4 分格</el-radio-button>
@@ -37,7 +35,6 @@
       <div style="display: flex; flex-direction: column; gap: 16px">
         <!-- 交通事件（AI识别） -->
         <div class="panel">
-          <MarkPoint :index="3" doc-key="traffic.event" />
           <div class="panel-title">交通事件（AI 识别）</div>
           <el-table :data="events" size="small" height="180">
             <el-table-column prop="time" label="时间" width="72" />
@@ -83,7 +80,6 @@
 
     <!-- 诱导屏及情报板信息编辑发布 -->
     <div class="panel" style="margin-top: 16px">
-      <MarkPoint :index="4" doc-key="traffic.publish" />
       <div class="panel-title">诱导屏 / 情报板信息编辑发布</div>
       <div class="publish-wrap">
         <!-- 左侧设备选择 -->
@@ -166,7 +162,6 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
-import MarkPoint from '../components/MarkPoint.vue'
 import { pickRandomCctvImages } from '../config/cctvGallery'
 
 const wallLayout = ref(9)

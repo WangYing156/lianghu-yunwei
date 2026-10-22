@@ -2,14 +2,12 @@
   <div class="page-bg">
     <!-- 监测点位三维场景 -->
     <div class="panel scene-panel">
-      <MarkPoint :index="1" doc-key="monitoring.scene" />
-      <TunnelScene map-mode resizable :points="monitorPoints" height="320px" :default-groups="['structure', 'env', 'monitor']" />
+      <TunnelScene map-mode resizable :points="monitorPoints" height="320px" />
     </div>
 
     <div class="grid-2" style="margin-top: 16px">
       <!-- 环控系统监测 · 环境气体 -->
       <div class="panel">
-        <MarkPoint :index="2" doc-key="monitoring.env" />
         <div class="panel-title">环控系统监测 · 环境气体</div>
         <div class="gas-stats">
           <div class="gas-item"><b class="num-green">12</b><span>CO (ppm)</span></div>
@@ -59,7 +57,6 @@
 
       <!-- 结构监测 -->
       <div class="panel">
-        <MarkPoint :index="3" doc-key="monitoring.structure" />
         <div class="panel-title">结构监测 · 沉降 / 变形</div>
         <div class="mini-title">结构沉降监测（mm）</div>
         <VChart :option="settleOption" height="160px" />
@@ -82,7 +79,6 @@
 <script setup lang="ts">
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 import VChart from '../components/VChart.vue'
-import MarkPoint from '../components/MarkPoint.vue'
 
 /* 监测点位三维场景（环控 + 结构监测） */
 const monitorPoints: ScenePoint[] = [

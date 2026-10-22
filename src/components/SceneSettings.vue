@@ -16,7 +16,9 @@
         <el-icon><Setting /></el-icon><span>场景设置</span>
       </button>
     </template>
-    <div class="settings-head"><span>场景设置</span><small>按需展开 · 保持视野简洁</small></div>
+    <div class="settings-head">
+      <span>场景设置</span><small>按需展开 · 保持视野简洁</small>
+    </div>
     <el-collapse v-model="expanded" class="scene-settings">
       <el-collapse-item title="底图与二 / 三维视图" name="map">
         <label class="setting-label">视图维度</label>
@@ -30,40 +32,81 @@
           <el-radio-button value="satellite">卫星</el-radio-button>
           <el-radio-button value="vector">矢量</el-radio-button>
         </el-radio-group>
-        <el-checkbox v-model="basemapEnabled" size="small">显示在线底图</el-checkbox>
+        <el-checkbox v-model="basemapEnabled" size="small"
+          >显示在线底图</el-checkbox
+        >
         <label class="setting-label"
           >正射影像透明度 <span>{{ orthophotoAlpha }}%</span></label
         >
-        <el-slider v-model="orthophotoAlpha" size="small" aria-label="正射影像透明度" />
+        <el-slider
+          v-model="orthophotoAlpha"
+          size="small"
+          aria-label="正射影像透明度"
+        />
         <label class="setting-label"
           >倾斜摄影透明度 <span>{{ obliqueAlpha }}%</span></label
         >
-        <el-slider v-model="obliqueAlpha" size="small" aria-label="倾斜摄影透明度" />
+        <el-slider
+          v-model="obliqueAlpha"
+          size="small"
+          aria-label="倾斜摄影透明度"
+        />
       </el-collapse-item>
       <el-collapse-item title="模型显示与材质" name="models">
         <div class="model-switches">
-          <el-checkbox v-model="showFullTunnel" size="small">完整施工模型</el-checkbox>
-          <el-checkbox v-model="showPartialTunnel" size="small">局部竣工模型</el-checkbox>
+          <el-checkbox v-model="showFullTunnel" size="small"
+            >完整施工模型</el-checkbox
+          >
+          <el-checkbox v-model="showPartialTunnel" size="small"
+            >局部竣工模型</el-checkbox
+          >
         </div>
         <label class="setting-label"
           >施工模型透明度 <span>{{ bimOpacity }}%</span></label
         >
-        <el-slider v-model="bimOpacity" :min="10" size="small" aria-label="施工模型透明度" />
+        <el-slider
+          v-model="bimOpacity"
+          :min="10"
+          size="small"
+          aria-label="施工模型透明度"
+        />
         <label class="setting-label"
           >模型照明强度 <span>{{ bimBrightness }}%</span></label
         >
-        <el-slider v-model="bimBrightness" :min="20" size="small" aria-label="模型照明强度" />
-        <el-checkbox v-model="partialXray" size="small">竣工模型透视</el-checkbox>
-        <p class="setting-note">内部巡游时将独立显示竣工模型，退出后恢复当前设置。</p>
+        <el-slider
+          v-model="bimBrightness"
+          :min="20"
+          size="small"
+          aria-label="模型照明强度"
+        />
+        <el-checkbox v-model="partialXray" size="small"
+          >竣工结构透视</el-checkbox
+        >
+        <el-checkbox v-model="roadXray" size="small">路面透视</el-checkbox>
+        <p class="setting-note">
+          路面默认保留原始贴图与不透明材质，结构透视不会把道路变成玻璃。
+        </p>
+        <p class="setting-note">
+          内部巡游时将独立显示竣工模型，退出后恢复当前设置。
+        </p>
       </el-collapse-item>
       <el-collapse-item title="场景环境" name="environment">
-        <el-radio-group v-model="environment" size="small" class="environment-options">
-          <el-radio-button v-for="item in SCENE_ENVIRONMENTS" :key="item.id" :value="item.id">{{
-            item.label
-          }}</el-radio-button>
+        <el-radio-group
+          v-model="environment"
+          size="small"
+          class="environment-options"
+        >
+          <el-radio-button
+            v-for="item in SCENE_ENVIRONMENTS"
+            :key="item.id"
+            :value="item.id"
+            >{{ item.label }}</el-radio-button
+          >
         </el-radio-group>
         <p class="setting-note">
-          {{ SCENE_ENVIRONMENTS.find((e) => e.id === environment)?.description }}
+          {{
+            SCENE_ENVIRONMENTS.find((e) => e.id === environment)?.description
+          }}
         </p>
       </el-collapse-item>
     </el-collapse>
@@ -73,22 +116,39 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Setting } from '@element-plus/icons-vue'
-import { SCENE_ENVIRONMENTS, type SceneEnvironmentId } from '../config/sceneEnvironment'
-import type { BasemapMode, MapViewMode } from '../composables/useCesiumTunnelMap'
+import {
+  SCENE_ENVIRONMENTS,
+  type SceneEnvironmentId,
+} from '../config/sceneEnvironment'
+import type {
+  BasemapMode,
+  MapViewMode,
+} from '../composables/useCesiumTunnelMap'
 
 defineProps<{ ready: boolean; disabled: boolean }>()
 const expanded = ref<string[]>([])
 const basemap = defineModel<BasemapMode>('basemap', { required: true })
 const viewMode = defineModel<MapViewMode>('viewMode', { required: true })
-const basemapEnabled = defineModel<boolean>('basemapEnabled', { required: true })
-const orthophotoAlpha = defineModel<number>('orthophotoAlpha', { required: true })
+const basemapEnabled = defineModel<boolean>('basemapEnabled', {
+  required: true,
+})
+const orthophotoAlpha = defineModel<number>('orthophotoAlpha', {
+  required: true,
+})
 const obliqueAlpha = defineModel<number>('obliqueAlpha', { required: true })
-const showFullTunnel = defineModel<boolean>('showFullTunnel', { required: true })
-const showPartialTunnel = defineModel<boolean>('showPartialTunnel', { required: true })
+const showFullTunnel = defineModel<boolean>('showFullTunnel', {
+  required: true,
+})
+const showPartialTunnel = defineModel<boolean>('showPartialTunnel', {
+  required: true,
+})
 const bimOpacity = defineModel<number>('bimOpacity', { required: true })
 const bimBrightness = defineModel<number>('bimBrightness', { required: true })
 const partialXray = defineModel<boolean>('partialXray', { required: true })
-const environment = defineModel<SceneEnvironmentId>('environment', { required: true })
+const roadXray = defineModel<boolean>('roadXray', { required: true })
+const environment = defineModel<SceneEnvironmentId>('environment', {
+  required: true,
+})
 </script>
 
 <style scoped lang="scss">

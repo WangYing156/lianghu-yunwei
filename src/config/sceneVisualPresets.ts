@@ -12,7 +12,7 @@ export interface SceneVisualPreset {
   partialSse: number
   /** 倾斜摄影底色（hex，不含透明度）——透明度由 UI 的 obliqueAlpha 实时控制 */
   obliqueTint: string
-  /** 竣工模型材质染色（hex）——偏暖色，与施工模型（原始材质）区分 */
+  /** 竣工模型中性乘色（保留源 GLB 材质） */
   partialTint: string
   /** 施工模型默认不透明度（0-100） */
   bimOpacityDefault: number
@@ -28,7 +28,7 @@ export const SCENE_VISUAL_PRESETS: SceneVisualPreset[] = [
   {
     id: 'neon-tunnel',
     label: '霓虹隧道',
-    description: '柔和暖色材质 · 突出竣工模型 · 无线框',
+    description: '原始模型材质 · 柔和照明 · 无线框',
     loadOblique: true,
     loadBim: true,
     loadPartial: true,
@@ -36,7 +36,7 @@ export const SCENE_VISUAL_PRESETS: SceneVisualPreset[] = [
     bimSse: 5,
     partialSse: 5,
     obliqueTint: '#1e2a3e',
-    partialTint: '#f4e8d7',
+    partialTint: '#ffffff',
     bimOpacityDefault: 100,
     partialOpacityDefault: 100,
     bloom: true,
@@ -55,7 +55,7 @@ export const SCENE_VISUAL_PRESETS: SceneVisualPreset[] = [
     bimSse: 4,
     partialSse: 4,
     obliqueTint: '#3a4a5f',
-    partialTint: '#eaf3fa',
+    partialTint: '#ffffff',
     bimOpacityDefault: 38,
     partialOpacityDefault: 100,
     bloom: false,

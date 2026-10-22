@@ -2,21 +2,18 @@
   <div class="page-bg">
     <!-- 投诉信息点位三维场景 -->
     <div class="panel scene-panel">
-      <MarkPoint :index="5" doc-key="service.complaintmap" />
       <TunnelScene
         map-mode
         resizable
         :min-height="200"
         :points="complaintPoints"
         height="280px"
-        :default-groups="['structure']"
       />
     </div>
 
     <div class="grid-2" style="margin-top: 16px">
       <!-- 公众病害反馈 -->
       <div class="panel">
-        <MarkPoint :index="1" doc-key="service.feedback" />
         <div class="panel-title">公众病害反馈</div>
         <div class="fb-stats">
           <div class="fb-item"><b class="num-blue">37</b><span>今日上报</span></div>
@@ -44,7 +41,6 @@
 
       <!-- 预警信息发布 -->
       <div class="panel">
-        <MarkPoint :index="2" doc-key="service.publish" />
         <div class="panel-title">预警信息发布
           <el-button size="small" type="primary" style="margin-left:auto">新建发布</el-button>
         </div>
@@ -69,7 +65,6 @@
     <!-- 安全知识教育 -->
     <div class="grid-3" style="margin-top: 16px">
       <div class="panel">
-        <MarkPoint :index="4" doc-key="service.safetyedu" />
         <div class="panel-title">安全知识教育</div>
         <div class="edu-list">
           <div class="edu-item" v-for="e in eduItems" :key="e.title">
@@ -87,7 +82,6 @@
 </template>
 
 <script setup lang="ts">
-import MarkPoint from '../components/MarkPoint.vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 
 /* 投诉信息点位三维场景 */

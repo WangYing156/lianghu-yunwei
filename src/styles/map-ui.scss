@@ -420,6 +420,7 @@
 /* 地图设备详情：TunnelScene 内 .map-floating-popup + .pd-shell，不再使用 Esri Popup */
 
 /* 内部巡游时收起两侧业务遮罩，让设备成为视觉主体。 */
+.map-layout-full:has(.tunnel-scene.is-inspecting),
 .map-layout-full:has(.tunnel-scene.is-roaming),
 .map-layout-full:has(.tunnel-scene.is-expanded) {
   &::before, &::after { opacity: 0; }

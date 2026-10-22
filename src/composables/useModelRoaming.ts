@@ -1,22 +1,28 @@
 import { reactive, shallowRef } from 'vue'
 import * as Cesium from 'cesium'
 import { PARTIAL_ROAMING_ROUTES } from '../config/partialRoamingRoutes'
-import { parseModelEquipment, type ModelEquipment } from '../utils/modelEquipment'
+import {
+  loadModelEquipment,
+  type ModelEquipment,
+} from '../utils/modelEquipment'
 import {
   advanceRoamingProgress,
   clamp01,
   createRoamingPath,
+  createRoamingEntry,
   nearestRoamingProgress,
   sampleRoamingPath,
   type Point3,
   type RoamingPath,
 } from '../utils/roamingPath'
 import type { RoamingState } from '../types/roaming'
+import { modelColorConditions } from '../utils/modelMaterials'
 
 interface RoamingOptions {
   getViewer: () => Cesium.Viewer | null
   prepare: () => Promise<Cesium.Cesium3DTileset | null>
   getTilesets: () => Cesium.Cesium3DTileset[]
+  getRoadXray?: () => boolean
   onEnter: () => void
   onExit: () => void
   onEquipment: (equipment: ModelEquipment | null) => void
@@ -28,13 +34,13 @@ export function useModelRoaming(options: RoamingOptions) {
     active: false,
     loading: false,
     playing: false,
-    progress: 0.04,
+    ...createRoamingEntry(),
     speed: 2,
-    direction: 1,
     layer: 'lower',
     eyeHeight: 1.8,
     lateralOffset: 0,
     length: 0,
+    roadXray: false,
     dimStructure: false,
     selectedEquipmentId: '',
     error: '',
@@ -54,7 +60,8 @@ export function useModelRoaming(options: RoamingOptions) {
     const v = options.getViewer()
     return v && !v.isDestroyed() ? v : null
   }
-  const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const reducedMotion = () =>
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
   const point3 = (p: Point3) => new Cesium.Cartesian3(...p)
   const asTuple = (p: Cesium.Cartesian3): Point3 => [p.x, p.y, p.z]
 
@@ -72,18 +79,29 @@ export function useModelRoaming(options: RoamingOptions) {
     )
     const destination = Cesium.Cartesian3.add(
       point3(point),
-      Cesium.Cartesian3.multiplyByScalar(up, state.eyeHeight, new Cesium.Cartesian3()),
+      Cesium.Cartesian3.multiplyByScalar(
+        up,
+        state.eyeHeight,
+        new Cesium.Cartesian3(),
+      ),
       new Cesium.Cartesian3(),
     )
     Cesium.Cartesian3.add(
       destination,
-      Cesium.Cartesian3.multiplyByScalar(side, state.lateralOffset, new Cesium.Cartesian3()),
+      Cesium.Cartesian3.multiplyByScalar(
+        side,
+        state.lateralOffset,
+        new Cesium.Cartesian3(),
+      ),
       destination,
     )
     return { destination, orientation: { direction, up } }
   }
 
-  function flyTo(view: ReturnType<typeof viewAt>, duration = 0.9): Promise<boolean> {
+  function flyTo(
+    view: ReturnType<typeof viewAt>,
+    duration = 0.9,
+  ): Promise<boolean> {
     const v = viewer()
     if (!v) return Promise.resolve(false)
     v.camera.cancelFlight()
@@ -105,15 +123,14 @@ export function useModelRoaming(options: RoamingOptions) {
 
   function updateStyle() {
     if (!partial || partial.isDestroyed() || !state.active) return
-    const idExpression =
-      equipment.value.map((e) => `\${id} === ${JSON.stringify(e.id)}`).join(' || ') || 'false'
     partial.style = new Cesium.Cesium3DTileStyle({
       color: {
-        conditions: [
-          [`\${id} === ${JSON.stringify(state.selectedEquipmentId)}`, "color('#ffd5a1', 1.0)"],
-          [idExpression, "color('#ffffff', 1.0)"],
-          ['true', state.dimStructure ? "color('#a6bacb', 0.025)" : "color('#ffffff', 1.0)"],
-        ],
+        conditions: modelColorConditions({
+          selectedEquipmentId: state.selectedEquipmentId,
+          equipmentIds: equipment.value.map((e) => e.id),
+          dimStructure: state.dimStructure,
+          roadXray: state.roadXray,
+        }),
       },
     })
     viewer()?.scene.requestRender()
@@ -138,13 +155,13 @@ export function useModelRoaming(options: RoamingOptions) {
     try {
       const ts = await options.prepare()
       if (current !== sequence || !viewer()) return
-      if (!ts || ts.isDestroyed()) throw new Error('竣工模型未能加载，请检查模型资源后重试。')
+      if (!ts || ts.isDestroyed())
+        throw new Error('竣工模型未能加载，请检查模型资源后重试。')
       const base = import.meta.env.BASE_URL || '/'
-      const response = await fetch(`${base}三维数据/局部隧道竣工模型/scenetree.json`, {
-        signal: abort.signal,
-      })
-      if (!response.ok) throw new Error('竣工模型设备目录加载失败，请检查 scenetree.json。')
-      const catalog = parseModelEquipment(await response.json())
+      const catalog = await loadModelEquipment(
+        `${base}三维数据/局部隧道竣工模型/scenetree.json`,
+        abort.signal,
+      )
       if (current !== sequence || !viewer()) return
       if (!catalog.length) throw new Error('竣工模型中没有可定位的设备构件。')
       partial = ts
@@ -152,7 +169,11 @@ export function useModelRoaming(options: RoamingOptions) {
       equipment.value = catalog.map((e) => ({
         ...e,
         center: asTuple(
-          Cesium.Matrix4.multiplyByPoint(ts.modelMatrix, point3(e.center), new Cesium.Cartesian3()),
+          Cesium.Matrix4.multiplyByPoint(
+            ts.modelMatrix,
+            point3(e.center),
+            new Cesium.Cartesian3(),
+          ),
         ) as [number, number, number],
       }))
       const transform = ts.root.computedTransform
@@ -171,14 +192,19 @@ export function useModelRoaming(options: RoamingOptions) {
           createRoamingPath(
             route.points.map((p) =>
               asTuple(
-                Cesium.Matrix4.multiplyByPoint(transform, point3(p), new Cesium.Cartesian3()),
+                Cesium.Matrix4.multiplyByPoint(
+                  transform,
+                  point3(p),
+                  new Cesium.Cartesian3(),
+                ),
               ),
             ),
           ),
         ),
       )
       state.length = paths.get(state.layer)!.length
-      state.progress = 0.04
+      Object.assign(state, createRoamingEntry())
+      state.roadXray = options.getRoadXray?.() ?? false
       state.selectedEquipmentId = ''
       state.dimStructure = false
 
@@ -231,7 +257,8 @@ export function useModelRoaming(options: RoamingOptions) {
           ts.colorBlendMode = previous.blend
           ts.colorBlendAmount = previous.blendAmount
         }
-        if (restoreCamera) camera.flyTo({ ...savedView, duration: reducedMotion() ? 0 : 0.8 })
+        if (restoreCamera)
+          camera.flyTo({ ...savedView, duration: reducedMotion() ? 0 : 0.8 })
       }
       state.active = true
       options.onEnter()
@@ -301,7 +328,8 @@ export function useModelRoaming(options: RoamingOptions) {
     } catch (error) {
       if (current !== sequence || (error as Error).name === 'AbortError') return
       stop(false)
-      state.error = error instanceof Error ? error.message : '内部巡游启动失败，请重试。'
+      state.error =
+        error instanceof Error ? error.message : '内部巡游启动失败，请重试。'
     } finally {
       if (current === sequence) state.loading = false
     }
@@ -375,6 +403,15 @@ export function useModelRoaming(options: RoamingOptions) {
     updateStyle()
   }
 
+  function setRoadXray(xray: boolean) {
+    state.roadXray = xray
+    updateStyle()
+  }
+  function returnToEntry() {
+    Object.assign(state, createRoamingEntry())
+    seek(1)
+  }
+
   async function inspectEquipment(id: string) {
     if (!state.active || state.loading) return
     const item = equipment.value.find((e) => e.id === id)
@@ -384,7 +421,11 @@ export function useModelRoaming(options: RoamingOptions) {
     // 自动选择离设备更近的通行层，而不是把所有设备投影到同一个高度。
     const targetAtFloor = Cesium.Cartesian3.subtract(
       point3(item.center),
-      Cesium.Cartesian3.multiplyByScalar(up, state.eyeHeight, new Cesium.Cartesian3()),
+      Cesium.Cartesian3.multiplyByScalar(
+        up,
+        state.eyeHeight,
+        new Cesium.Cartesian3(),
+      ),
       new Cesium.Cartesian3(),
     )
     paths.forEach((path, layer: RoamingState['layer']) => {
@@ -395,7 +436,8 @@ export function useModelRoaming(options: RoamingOptions) {
     state.length = paths.get(state.layer)!.length
     state.progress = clamp01(
       best.progress -
-        (state.direction * Math.max(4, Math.min(item.radius * 1.3, 9))) / state.length,
+        (state.direction * Math.max(4, Math.min(item.radius * 1.3, 9))) /
+          state.length,
     )
     state.lateralOffset = 0
     state.selectedEquipmentId = item.id
@@ -404,7 +446,11 @@ export function useModelRoaming(options: RoamingOptions) {
     const view = viewAt()
     const target = point3(item.center)
     // 泵房等设备可能低于道路通行层。检视机位落到设备高度，而非隔着整层路板俯视。
-    const offset = Cesium.Cartesian3.subtract(view.destination, target, new Cesium.Cartesian3())
+    const offset = Cesium.Cartesian3.subtract(
+      view.destination,
+      target,
+      new Cesium.Cartesian3(),
+    )
     Cesium.Cartesian3.subtract(
       offset,
       Cesium.Cartesian3.multiplyByScalar(
@@ -422,14 +468,25 @@ export function useModelRoaming(options: RoamingOptions) {
       Math.max(2.5, Math.min(8, item.radius * 2.2)),
       offset,
     )
-    view.destination = Cesium.Cartesian3.add(target, offset, new Cesium.Cartesian3())
+    view.destination = Cesium.Cartesian3.add(
+      target,
+      offset,
+      new Cesium.Cartesian3(),
+    )
     Cesium.Cartesian3.add(
       view.destination,
       Cesium.Cartesian3.multiplyByScalar(up, 0.45, new Cesium.Cartesian3()),
       view.destination,
     )
-    const direction = Cesium.Cartesian3.subtract(target, view.destination, new Cesium.Cartesian3())
-    view.orientation.direction = Cesium.Cartesian3.normalize(direction, direction)
+    const direction = Cesium.Cartesian3.subtract(
+      target,
+      view.destination,
+      new Cesium.Cartesian3(),
+    )
+    view.orientation.direction = Cesium.Cartesian3.normalize(
+      direction,
+      direction,
+    )
     options.onEquipment(item)
     await flyTo(view, 0.8)
   }
@@ -456,6 +513,8 @@ export function useModelRoaming(options: RoamingOptions) {
     setLateralOffset,
     reverse,
     setDimStructure,
+    setRoadXray,
+    returnToEntry,
     inspectEquipment,
     selectPickedEquipment,
   }

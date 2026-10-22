@@ -2,14 +2,12 @@
   <div class="page-bg">
     <!-- 病害点位三维场景 -->
     <div class="panel scene-panel">
-      <MarkPoint :index="5" doc-key="maint.diseasemap" />
-      <TunnelScene map-mode resizable :points="diseasePoints" height="320px" :default-groups="['structure', 'monitor']" />
+      <TunnelScene map-mode resizable :points="diseasePoints" height="320px" />
     </div>
 
     <div class="grid-2" style="margin-top: 16px">
       <!-- 病害维修闭环 -->
       <div class="panel">
-        <MarkPoint :index="1" doc-key="maint.disease" />
         <div class="panel-title">病害维修闭环</div>
         <!-- 闭环流程 -->
         <div class="loop-flow">
@@ -48,7 +46,6 @@
 
       <!-- 结构健康评估 -->
       <div class="panel">
-        <MarkPoint :index="2" doc-key="maint.health" />
         <div class="panel-title">结构健康评估</div>
         <div class="health-segs">
           <div v-for="h in health" :key="h.name" class="hs-item">
@@ -75,7 +72,6 @@
 
       <!-- 巡检任务 + 周期维护 -->
       <div class="panel">
-        <MarkPoint :index="3" doc-key="maint.patrol" />
         <div class="panel-title">巡检任务与周期维护</div>
         <div class="patrol-now">
           <span>今日巡检：<b class="num-green">2/2 班次完成</b> · 覆盖率 <b class="num-blue">100%</b></span>
@@ -98,7 +94,6 @@
 
 <script setup lang="ts">
 import VChart from '../components/VChart.vue'
-import MarkPoint from '../components/MarkPoint.vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 
 /* 病害点位三维场景 */

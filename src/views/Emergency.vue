@@ -2,14 +2,12 @@
   <div class="page-bg">
     <!-- 应急处置三维场景（可拖拽调高） -->
     <div class="panel scene-panel">
-      <MarkPoint :index="1" doc-key="emergency.scene" />
-      <TunnelScene map-mode resizable :points="emergencyPoints" height="320px" :default-groups="['structure', 'env', 'mep']" />
+      <TunnelScene map-mode resizable :points="emergencyPoints" height="320px" />
     </div>
 
     <div class="grid-2" style="margin-top: 16px">
       <!-- 火灾排烟控制 -->
       <div class="panel">
-        <MarkPoint :index="2" doc-key="emergency.fire" />
         <div class="panel-title">火灾排烟控制</div>
         <div class="fire-row">
           <div class="fire-item ok"><b>482</b><span>烟感/温感 · 正常</span></div>
@@ -39,7 +37,6 @@
 
       <!-- 防洪排涝控制 -->
       <div class="panel">
-        <MarkPoint :index="3" doc-key="emergency.flood" />
         <div class="panel-title">防洪排涝控制</div>
         <el-alert type="error" :closable="false" style="margin-bottom: 10px"
           title="【红色预警】K3+050 积水液位 26.8cm，已联动排涝泵 P1/P2 启动，请关注处置进展。" />
@@ -61,7 +58,6 @@
     <div class="grid-2" style="margin-top: 16px">
       <!-- 交通事故控制 -->
       <div class="panel">
-        <MarkPoint :index="4" doc-key="emergency.traffic" />
         <div class="panel-title">交通事故控制</div>
         <div class="acc-stats">
           <div class="acc-item"><b class="num-blue">0</b><span>当前事故</span></div>
@@ -80,7 +76,6 @@
 
       <!-- 应急物资 -->
       <div class="panel">
-        <MarkPoint :index="5" doc-key="emergency.material" />
         <div class="panel-title">应急物资</div>
         <div class="mat-grid">
           <div class="mat-item"><div class="mt-num num-blue">120</div>沙袋（只）</div>
@@ -107,7 +102,6 @@
 
     <!-- 孪生VR仿真 -->
     <div class="panel vr-panel" style="margin-top: 16px">
-      <MarkPoint :index="6" doc-key="emergency.vr" />
       <div class="panel-title">
         孪生VR仿真
         <span class="vr-tag">数字孪生 · 沉浸式应急推演</span>
@@ -152,7 +146,6 @@ import { computed, ref } from 'vue'
 import { VideoPlay, VideoPause, RefreshRight, FullScreen } from '@element-plus/icons-vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 import VChart from '../components/VChart.vue'
-import MarkPoint from '../components/MarkPoint.vue'
 
 const emergencyPoints: ScenePoint[] = [
   { id: 'w1', name: '积水点 W1', kind: 'waterLevel', group: 'env', status: 'ok', left: '16%', top: '70%', leftNum: 16, scale: 1.05, stake: 'K2+250', value: '1.8cm', unit: 'cm', history: [

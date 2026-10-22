@@ -1,3 +1,5 @@
+import type { PointGroup, PointKind } from '../types/scene'
+
 export type AlertLevel = 'critical' | 'warning' | 'info' | 'notice'
 export interface TunnelAlert {
   id: string
@@ -8,8 +10,13 @@ export interface TunnelAlert {
   description: string
   stake: string
   pointId: string
+  group: PointGroup
+  kind: PointKind
 }
-export const ALERT_LEVELS: Record<AlertLevel, { label: string; color: string }> = {
+export const ALERT_LEVELS: Record<
+  AlertLevel,
+  { label: string; color: string }
+> = {
   critical: { label: '紧急', color: '#f08d91' },
   warning: { label: '重要', color: '#e6b779' },
   info: { label: '一般', color: '#7fb7db' },
@@ -25,7 +32,9 @@ export const DEMO_ALERTS: readonly TunnelAlert[] = [
     title: '积水液位快速上升',
     description: 'K3+050 积水监测点触发预警，请加强巡查并预置排涝设备。',
     stake: 'K3+050',
-    pointId: 'w1',
+    pointId: 'demo-alert-flood-3050',
+    group: 'env',
+    kind: 'waterLevel',
   },
   {
     id: 'traffic-3050',
@@ -35,7 +44,9 @@ export const DEMO_ALERTS: readonly TunnelAlert[] = [
     title: '违停事件待确认',
     description: 'K3+050 AI 识别违停事件，尚未确认，请调取对应视频核实。',
     stake: 'K3+050',
-    pointId: 'c2',
+    pointId: 'demo-alert-traffic-3050',
+    group: 'traffic',
+    kind: 'camera',
   },
   {
     id: 'board-3400',
@@ -45,7 +56,9 @@ export const DEMO_ALERTS: readonly TunnelAlert[] = [
     title: '交通诱导屏离线',
     description: 'K3+400 诱导屏离线超过 30 分钟，建议检查供电与通信链路。',
     stake: 'K3+400',
-    pointId: 'sc2',
+    pointId: 'demo-alert-board-3400',
+    group: 'traffic',
+    kind: 'infoBoard',
   },
   {
     id: 'light-3200',
@@ -55,7 +68,9 @@ export const DEMO_ALERTS: readonly TunnelAlert[] = [
     title: '环境照度偏低',
     description: 'K3+200 照度偏低，建议检查照明回路及灯具运行状态。',
     stake: 'K3+200',
-    pointId: 's2',
+    pointId: 'demo-alert-light-3200',
+    group: 'env',
+    kind: 'illum',
   },
   {
     id: 'flow-2800',
@@ -65,6 +80,8 @@ export const DEMO_ALERTS: readonly TunnelAlert[] = [
     title: '断面流量异常下降',
     description: '断面流量骤降 40%，疑似拥堵，请结合现场视频核查。',
     stake: 'K2+800',
-    pointId: 'vd1',
+    pointId: 'demo-alert-flow-2800',
+    group: 'traffic',
+    kind: 'vehicleDet',
   },
 ]

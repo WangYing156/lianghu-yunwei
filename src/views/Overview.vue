@@ -2,14 +2,12 @@
   <div class="overview-root map-layout-full">
     <!-- 三维场景铺满 -->
     <div class="scene-wrap">
-      <MarkPoint :index="1" doc-key="overview.scene" />
       <TunnelScene ref="sceneRef" map-mode :points="points" height="100%" />
     </div>
 
     <!-- 左侧悬浮面板列 -->
     <div class="map-side-rail map-side-rail--left">
       <div class="panel side-panel">
-        <MarkPoint :index="2" doc-key="overview.alarm" />
         <AlarmPanel :items="DEMO_ALERTS" @locate="locateAlarm" />
       </div>
 
@@ -24,15 +22,15 @@
 
       <div class="panel side-panel">
         <div class="panel-title">重点监控</div>
-        <p class="panel-sub">聚焦：关键断面实时画面</p>
+        <p class="panel-sub">关键断面 · 点击放大并定位</p>
         <div class="cam-grid">
-          <div v-for="c in cams" :key="c.name" class="cam-cell">
+          <button v-for="c in cams" :key="c.id" type="button" class="cam-cell" :aria-label="`打开${c.name}监控画面并定位`" @click="openVideoPreview(c)">
             <div class="cam-view" :class="c.alarm ? 'cam-alarm' : ''" :style="camThumbStyle(c)">
-              <span class="cam-live">LIVE</span>
+              <span class="cam-live">模拟画面</span><span class="cam-expand" aria-hidden="true">↗</span>
               <span v-if="c.alarm" class="cam-event">{{ c.event }}</span>
             </div>
             <div class="cam-name">{{ c.name }}</div>
-          </div>
+          </button>
         </div>
       </div>
     </div>
@@ -40,7 +38,6 @@
     <!-- 右侧悬浮面板列 -->
     <div class="map-side-rail map-side-rail--right">
       <div class="panel side-panel">
-        <MarkPoint :index="3" doc-key="overview.device" />
         <div class="panel-title">设施设备状态</div>
         <div class="dev-cards">
           <div v-for="d in devices" :key="d.name" class="dev-card">
@@ -55,7 +52,6 @@
       </div>
 
       <div class="panel side-panel">
-        <MarkPoint :index="4" doc-key="overview.ticket" />
         <div class="panel-title">运维养护工单状态</div>
         <div class="ticket-stats">
           <div class="ts-item"><b class="num-orange">6</b><span>待派发</span></div>
@@ -82,62 +78,13 @@
 import { ref } from 'vue'
 import AlarmPanel from '../components/AlarmPanel.vue'
 import { DEMO_ALERTS, type TunnelAlert } from '../config/alerts'
-import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
+import TunnelScene from '../components/TunnelScene.vue'
 import VChart from '../components/VChart.vue'
-import MarkPoint from '../components/MarkPoint.vue'
-import { pickRandomCctvImages } from '../config/cctvGallery'
+import { BASE_SCENE_POINTS } from '../config/scenePoints'
+import { CCTV_CAMERAS } from '../config/cctvGallery'
+import { openVideoPreview } from '../composables/useVideoPreview'
 
-const points: ScenePoint[] = [
-  // 隧道环境（主体）
-  { id: 'st1', name: '结构上层 K2+100~K4+300', kind: 'structureUp', group: 'structure', status: 'ok', left: '40%', top: '30%', leftNum: 40, scale: 0.9, stake: 'K2+100~K4+300', value: '正常', inspect: '2026-10-10' },
-  { id: 'st2', name: '结构下层 K3+600', kind: 'structureDown', group: 'structure', status: 'ok', left: '70%', top: '44%', leftNum: 70, scale: 0.8, stake: 'K3+600', value: '正常', inspect: '2026-10-08' },
-  { id: 'pipe1', name: '机电管线廊', kind: 'pipe', group: 'structure', status: 'ok', left: '55%', top: '70%', leftNum: 55, scale: 0.75, stake: 'K3+200', value: '正常', inspect: '2026-10-05' },
-  { id: 'pass1', name: '应急通道口', kind: 'passage', group: 'structure', status: 'ok', left: '30%', top: '66%', leftNum: 30, scale: 0.8, stake: 'K2+600', value: '畅通', inspect: '2026-10-06' },
-  { id: 'oc1', name: '隧道运管中心', kind: 'opsCenter', group: 'structure', status: 'ok', left: '14%', top: '14%', leftNum: 14, scale: 1.05, stake: '南湖段管理中心', value: '运行', inspect: '2026-10-15' },
-  { id: 'rp1', name: '雨水泵房', kind: 'rainPump', group: 'structure', status: 'ok', left: '38%', top: '84%', leftNum: 38, scale: 0.95, stake: 'K3+000 东侧', value: '待机', inspect: '2026-10-14' },
-  { id: 'fs1', name: '消防泵房', kind: 'fireStation', group: 'structure', status: 'ok', left: '48%', top: '82%', leftNum: 48, scale: 0.95, stake: 'K3+000', value: '待机', inspect: '2026-10-14' },
-  { id: 'wp1', name: '废水泵房', kind: 'wastePump', group: 'structure', status: 'ok', left: '58%', top: '84%', leftNum: 58, scale: 0.95, stake: 'K3+000 西侧', value: '运行', inspect: '2026-10-14' },
-  { id: 'ss1', name: '变电所', kind: 'substation', group: 'structure', status: 'ok', left: '20%', top: '26%', leftNum: 20, scale: 0.95, stake: 'K2+400', value: '供电正常', inspect: '2026-10-13' },
-  // 交通管控
-  { id: 'c1', name: '固定摄像机 K2+300', kind: 'camera', group: 'traffic', status: 'ok', left: '18%', top: '30%', leftNum: 18, scale: 1.1, stake: 'K2+300', value: '1080P', inspect: '2026-10-14' },
-  { id: 'c2', name: '固定摄像机 K3+050', kind: 'camera', group: 'traffic', status: 'alarm', left: '46%', top: '26%', leftNum: 46, scale: 0.95, stake: 'K3+050', value: 'AI事件', alarm: '违停事件未确认', inspect: '2026-10-15', unit: '辆/min', history: [
-    { time: '14:00', value: 42 }, { time: '14:05', value: 38 }, { time: '14:10', value: 55 }, { time: '14:12', value: 88 }, { time: '14:15', value: 61 }
-  ] },
-  { id: 'dome1', name: '球形摄像机 K3+800', kind: 'dome', group: 'traffic', status: 'ok', left: '74%', top: '32%', leftNum: 74, scale: 0.8, stake: 'K3+800', value: '在线', inspect: '2026-10-13' },
-  { id: 'sc1', name: '可变情报板 K2+600', kind: 'infoBoard', group: 'traffic', status: 'ok', left: '24%', top: '62%', leftNum: 24, scale: 1.05, stake: 'K2+600', value: '限速60', inspect: '2026-10-11' },
-  { id: 'sc2', name: '可变情报板 K3+400', kind: 'infoBoard', group: 'traffic', status: 'offline', left: '60%', top: '64%', leftNum: 60, scale: 0.85, stake: 'K3+400', value: '离线 32min', inspect: '2026-10-08' },
-  { id: 'lane1', name: '车道指示器 K3+100', kind: 'laneInd', group: 'traffic', status: 'ok', left: '42%', top: '58%', leftNum: 42, scale: 0.85, stake: 'K3+100', value: '绿灯', inspect: '2026-10-10' },
-  { id: 'vd1', name: '车辆检测器 K2+800', kind: 'vehicleDet', group: 'traffic', status: 'ok', left: '34%', top: '74%', leftNum: 34, scale: 0.8, stake: 'K2+800', value: '正常', inspect: '2026-10-07' },
-  { id: 'ph1', name: '紧急电话 K3+300', kind: 'phone', group: 'traffic', status: 'ok', left: '52%', top: '68%', leftNum: 52, scale: 0.8, stake: 'K3+300', value: '正常', inspect: '2026-10-09' },
-  { id: 'spk1', name: '广播扬声器 K2+500', kind: 'speaker', group: 'traffic', status: 'ok', left: '28%', top: '52%', leftNum: 28, scale: 0.8, stake: 'K2+500', value: '正常', inspect: '2026-10-07' },
-  // 环控系统
-  { id: 's1', name: 'CO/VI检测器', kind: 'covi', group: 'env', status: 'ok', left: '24%', top: '46%', leftNum: 24, scale: 1, stake: 'K2+500', value: 'CO 12ppm', inspect: '2026-10-10', unit: 'ppm', history: [
-    { time: '08:00', value: 8 }, { time: '10:00', value: 11 }, { time: '12:00', value: 14 }, { time: '14:00', value: 12 }, { time: '16:00', value: 10 }
-  ] },
-  { id: 'wind1', name: '风速风向仪 K3+000', kind: 'wind', group: 'env', status: 'ok', left: '44%', top: '20%', leftNum: 44, scale: 0.9, stake: 'K3+000', value: '2.4m/s', inspect: '2026-10-11' },
-  { id: 's2', name: '照度计', kind: 'illum', group: 'env', status: 'warn', left: '58%', top: '50%', leftNum: 58, scale: 0.9, stake: 'K3+200', value: '86 lux', inspect: '2026-10-09', alarm: '照度偏低预警' },
-  { id: 'fl1', name: '火焰探测器 K3+500', kind: 'flame', group: 'env', status: 'ok', left: '64%', top: '22%', leftNum: 64, scale: 0.85, stake: 'K3+500', value: '正常', inspect: '2026-10-12' },
-  { id: 'tmp1', name: '感温探测器', kind: 'heatSensor', group: 'env', status: 'ok', left: '62%', top: '18%', leftNum: 62, scale: 0.8, stake: 'K3+400', value: '24.6℃', inspect: '2026-10-12' },
-  { id: 'smk1', name: '感烟探测器 K2+900', kind: 'smokeSensor', group: 'env', status: 'ok', left: '36%', top: '22%', leftNum: 36, scale: 0.8, stake: 'K2+900', value: '正常', inspect: '2026-10-12' },
-  { id: 'w1', name: '积水监测 W1', kind: 'waterLevel', group: 'env', status: 'alarm', left: '46%', top: '80%', leftNum: 46, scale: 0.8, stake: 'K3+050', value: '待复核', alarm: '积水液位快速上升，待现场复核（示例）', inspect: '2026-10-15' },
-  // 结构监测
-  { id: 'set1', name: '应力应变监测点', kind: 'stress', group: 'monitor', status: 'ok', left: '50%', top: '44%', leftNum: 50, scale: 0.8, stake: 'K3+200', value: '0.6mm', inspect: '2026-10-12', unit: 'mm', history: [
-    { time: '周一', value: 0.52 }, { time: '周二', value: 0.55 }, { time: '周三', value: 0.58 }, { time: '周四', value: 0.6 }, { time: '周五', value: 0.59 }
-  ] },
-  { id: 'def1', name: '应力应变监测点', kind: 'stress', group: 'monitor', status: 'ok', left: '80%', top: '46%', leftNum: 80, scale: 0.75, stake: 'K3+900', value: '0.3mm', inspect: '2026-10-12' },
-  { id: 'cor1', name: '结构腐蚀监测 K3+100', kind: 'corrosion', group: 'monitor', status: 'ok', left: '40%', top: '40%', leftNum: 40, scale: 0.8, stake: 'K3+100', value: '正常', inspect: '2026-10-11' },
-  { id: 'blt1', name: '螺栓受力监测 K3+600', kind: 'bolt', group: 'monitor', status: 'ok', left: '68%', top: '40%', leftNum: 68, scale: 0.8, stake: 'K3+600', value: '正常', inspect: '2026-10-11' },
-  { id: 'prs1', name: '压力监测 K2+700', kind: 'pressure', group: 'monitor', status: 'ok', left: '30%', top: '40%', leftNum: 30, scale: 0.8, stake: 'K2+700', value: '0.25MPa', inspect: '2026-10-11' },
-  // 隧道机电
-  { id: 'f1', name: '风机 1#', kind: 'fan', group: 'mep', status: 'ok', left: '36%', top: '18%', leftNum: 36, scale: 0.95, stake: 'K2+900', value: '运行', inspect: '2026-10-06' },
-  { id: 'f2', name: '风机 2#', kind: 'fan', group: 'mep', status: 'ok', left: '68%', top: '16%', leftNum: 68, scale: 0.8, stake: 'K3+600', value: '待机', inspect: '2026-10-06' },
-  { id: 'dm1', name: '风阀 K2+800', kind: 'damper', group: 'mep', status: 'ok', left: '32%', top: '24%', leftNum: 32, scale: 0.8, stake: 'K2+800', value: '开启', inspect: '2026-10-06' },
-  { id: 'vt1', name: '风口 K3+200', kind: 'vent', group: 'mep', status: 'ok', left: '50%', top: '26%', leftNum: 50, scale: 0.8, stake: 'K3+200', value: '正常', inspect: '2026-10-06' },
-  { id: 'fp1', name: '消防水泵 K3+000', kind: 'firePump', group: 'mep', status: 'ok', left: '44%', top: '78%', leftNum: 44, scale: 0.85, stake: '泵房K3+000', value: '待机', inspect: '2026-10-01' },
-  { id: 'fv1', name: '消防闸阀 K3+000', kind: 'fireValve', group: 'mep', status: 'ok', left: '50%', top: '80%', leftNum: 50, scale: 0.8, stake: '泵房K3+000', value: '开启', inspect: '2026-10-01' },
-  { id: 'p1', name: '排水泵 P1', kind: 'pump', group: 'mep', status: 'ok', left: '40%', top: '82%', leftNum: 40, scale: 0.9, stake: '泵房K3+000', value: '0.4MPa', inspect: '2026-10-01' },
-  { id: 'lamp1', name: '照明灯组 K2+400', kind: 'lamp', group: 'mep', status: 'ok', left: '26%', top: '34%', leftNum: 26, scale: 0.85, stake: 'K2+400', value: '96回路', inspect: '2026-10-05' }
-]
+const points = BASE_SCENE_POINTS
 
 const sceneRef = ref<InstanceType<typeof TunnelScene>>()
 
@@ -150,14 +97,7 @@ const devices = [
   { name: '诱导屏', icon: '🚹', ok: 44, total: 48, fault: 4 }
 ]
 
-const camImgs = pickRandomCctvImages(4)
-
-const cams = [
-  { name: '北口 K2+100', alarm: false, event: '', stake: 'K2+100', src: camImgs[0] },
-  { name: 'K3+050 事件', alarm: true, event: '违停', stake: 'K3+050', src: camImgs[1] },
-  { name: '泵房 K3+000', alarm: false, event: '', stake: 'K3+000', src: camImgs[2] },
-  { name: '南口 K4+300', alarm: false, event: '', stake: 'K4+300', src: camImgs[3] }
-]
+const cams = CCTV_CAMERAS
 
 function camThumbStyle(c: (typeof cams)[number]) {
   return {
@@ -251,11 +191,15 @@ function locateAlarm(alert: TunnelAlert) {
 }
 
 .cam-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-.cam-cell { .cam-view {
+.cam-cell {
+  padding: 0; font: inherit; text-align: left; color: inherit; background: transparent; cursor: pointer;
+  &:focus-visible { outline: 1px solid #9ec9d8; outline-offset: 3px; }
+ .cam-view {
     position: relative; height: 78px; border-radius: 5px; overflow: hidden;
     background-color: #0b1220;
     border: 1px solid rgba(100, 160, 220, 0.35);
-    .cam-live {
+    .cam-expand { position: absolute; right: 7px; top: 5px; color: #c6e0ec; font-size: 16px; text-shadow: 0 1px 5px #000; }
+.cam-live {
       position: absolute; top: 5px; left: 6px; z-index: 2;
       font-size: 10px; color: #fff; font-weight: 800;
       background: rgba(220, 38, 38, 0.9); padding: 1px 5px; border-radius: 3px;
