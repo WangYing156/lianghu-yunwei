@@ -115,7 +115,7 @@ CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:scene
 
 ## 模型与部署资源
 
-`public/三维数据/隧道施工模型/` 和 `public/三维数据/局部隧道竣工模型/` 随当前仓库提供。倾斜摄影目录 `public/三维数据/两湖倾斜/` 被 Git 忽略，需要另外部署；缺失时会跳过，不影响竣工 BIM 内部巡游。
+`public/三维数据/全局隧道施工模型/` 和 `public/三维数据/局部隧道竣工模型/` 随当前仓库提供。倾斜摄影目录 `public/三维数据/两湖倾斜/` 被 Git 忽略，需要另外部署；缺失时会跳过，不影响竣工 BIM 内部巡游。
 
 在线底图和正射影像需要相应服务可访问；路径配置见 `src/config/tunnelTilesets.ts`、`src/config/sceneVisualPresets.ts`。子目录部署时设置 Vite `base`，模型和路线资源按该路径提供。
 

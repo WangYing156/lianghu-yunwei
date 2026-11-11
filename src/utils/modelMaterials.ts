@@ -63,8 +63,8 @@ export function modelColorConditions(
   return conditions
 }
 
-const FRESNEL_FRAGMENT = /* glsl */ `
-void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+/** Fresnel 染色函数体（依赖 u_tint / u_brightness / u_selectMode / u_baseAlpha），可拼入其它 fragmentMain */
+export const FRESNEL_FRAGMENT_BODY = /* glsl */ `
   vec3 n = normalize(fsInput.attributes.normalEC);
   vec3 viewDir = normalize(-fsInput.attributes.positionEC);
   float ndotv = clamp(abs(dot(n, viewDir)), 0.0, 1.0);
@@ -79,8 +79,29 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   material.emissive += tint * (0.06 + 0.28 * fresnel) * mix(1.0, isWarm, selectBoost);
   float aBase = clamp(u_baseAlpha, 0.04, 1.0);
   material.alpha = clamp(aBase * mix(0.22, 0.95, fresnel), 0.05, 1.0);
+`
+
+const FRESNEL_FRAGMENT = /* glsl */ `
+void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+${FRESNEL_FRAGMENT_BODY}
 }
 `
+
+/** 选中态 Fresnel 所需 uniform（竣工模型选中 / 风机特效选中共用） */
+export function selectedFresnelUniforms(): Record<
+  string,
+  { type: Cesium.UniformType; value: number | Cesium.Cartesian3 }
+> {
+  return {
+    u_baseAlpha: { type: Cesium.UniformType.FLOAT, value: 0.85 },
+    u_tint: { type: Cesium.UniformType.VEC3, value: SELECTED_TINT_RGB },
+    u_brightness: {
+      type: Cesium.UniformType.FLOAT,
+      value: SELECTED_TINT_BRIGHTNESS,
+    },
+    u_selectMode: { type: Cesium.UniformType.FLOAT, value: 1 },
+  }
+}
 
 /** 施工模型：#0095FF × 4 + Fresnel 透明度 */
 export function createBimFresnelShader(baseAlpha: number): Cesium.CustomShader {

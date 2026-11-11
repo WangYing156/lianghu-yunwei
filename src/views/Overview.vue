@@ -174,11 +174,22 @@ function locateAlarm(alert: TunnelAlert) {
   font-size: 12px; margin-bottom: 2px;
 }
 
-.dev-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+.dev-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }
 .dev-card {
-  text-align: center; border: 1px solid rgba(70, 140, 230, 0.25); border-radius: 4px; padding: 6px 2px;
-  .dc-icon { font-size: 16px; }
-  .dc-name { font-size: 10px; color: #aebcd8; margin: 2px 0; }
+  text-align: center;
+  border: 1px solid rgba(120, 190, 255, 0.22);
+  border-radius: 10px;
+  padding: 8px 4px 7px;
+  background: linear-gradient(180deg, rgba(28, 64, 120, 0.45), rgba(8, 22, 48, 0.35));
+  .dc-icon {
+    width: 28px; height: 28px; margin: 0 auto 4px;
+    display: grid; place-items: center; font-size: 15px; line-height: 1;
+    border-radius: 8px;
+    background: rgba(8, 24, 48, 0.72);
+    border: 1px solid rgba(150, 210, 255, 0.35);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+  .dc-name { font-size: 10px; color: #d5e6ff; margin: 2px 0; }
   .dc-line { font-size: 10px; color: #cfe4ff; }
   .dc-fault { font-size: 9px; color: #ff5f6b; &.ok { color: #2ee6a0; } }
 }

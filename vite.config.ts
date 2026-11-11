@@ -2,6 +2,19 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import cesium from 'vite-plugin-cesium'
 
+/** chokidar 5 的字符串忽略是全等匹配，glob 无效。按路径段跳过，否则会监听 node_modules 和 5 万+ 瓦片，页面请求一直挂起。 */
+function isUnwatchedPath(file: string): boolean {
+  const parts = String(file).replace(/\\/g, '/').split('/')
+  return parts.some(
+    (part) =>
+      part === 'node_modules' ||
+      part === '三维数据' ||
+      part === '.git' ||
+      part === 'dist' ||
+      part === 'test-results',
+  )
+}
+
 export default defineConfig({
   plugins: [vue(), cesium()],
   server: {
@@ -12,15 +25,15 @@ export default defineConfig({
     allowedHosts: true,
     // 三维瓦片数量极大，监听它们会把开发服务卡死，页面请求一直挂起
     watch: {
-      ignored: ['**/public/三维数据/**', '**/.git/**'],
+      ignored: [isUnwatchedPath],
     },
   },
   optimizeDeps: {
     // 不要等全量依赖爬完才响应浏览器，否则首屏会停在白屏
     holdUntilCrawlEnd: false,
-    // Cesium 源码预打包会把开发服务卡死，页面请求一直挂起。
-    // 开发态直接走已发布的 ESM，HTML 可以马上返回。
-    exclude: ['cesium', '@cesium/engine', '@cesium/widgets', '@cesium/core'],
+    // 预打包 Cesium，把 CJS 依赖（mersenne-twister 等）转成可被浏览器加载的 ESM。
+    // 以前排除它是因为文件监听把服务卡死；监听修好后可以预打包，避免几千个源文件逐个请求。
+    include: ['cesium'],
   },
   css: { preprocessorOptions: { scss: { api: 'modern-compiler' } } },
   build: {

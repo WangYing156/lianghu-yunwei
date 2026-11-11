@@ -26,6 +26,8 @@ import {
 } from '../config/tunnelTilesets'
 import { setTilesetBackFaceCulling, spawnClickPulse } from './useTunnelModelFx'
 import { useModelRoaming } from './useModelRoaming'
+import { usePartialTunnelFx } from './usePartialTunnelFx'
+import { useTwinSimulation } from './useTwinSimulation'
 import {
   getSceneEnvironment,
   type SceneEnvironmentId,
@@ -38,7 +40,6 @@ import {
 } from './useSceneMarkers'
 import {
   createBimFresnelShader,
-  createSelectedFresnelShader,
   modelColorConditions,
   SELECTED_TINT_CSS,
   updateBimFresnelAlpha,
@@ -89,6 +90,8 @@ export interface UseCesiumTunnelMapOptions {
   getRoadXray?: () => boolean
   getAllDevices?: () => MapDevicePoint[]
   isPointKindVisible?: (group: string, kind: string) => boolean
+  /** 竣工模型 BIM 构件图标（非原始业务点位，默认隐藏） */
+  getShowModelMarkers?: () => boolean
   /** 场景全局环境 */
   getSceneEnvironmentId?: () => SceneEnvironmentId
   getBasemapEnabled?: () => boolean
@@ -269,7 +272,6 @@ export function useCesiumTunnelMap(
     Cesium.Cesium3DTileset,
     Cesium.CustomShader
   >()
-  let selectedFresnelShader: Cesium.CustomShader | null = null
   let clusterExploded = false
   let orthoLayerRef: Cesium.ImageryLayer | null = null
   let clickPulseDispose: (() => void) | null = null
@@ -307,7 +309,7 @@ export function useCesiumTunnelMap(
     },
     () => viewer.value,
   )
-  let markerClustering = true
+  let markerClustering = false
   let selectionGlow: Cesium.Entity | null = null
   /** 仅作占位，避免旧逻辑残留；选中发光不再启用全屏 bloom */
   let bloomRestore: { enabled: boolean; brightness: number } | null = null
@@ -320,42 +322,95 @@ export function useCesiumTunnelMap(
     getSelectedEquipmentId: () => selectedEquipmentId,
     isKindVisible: (group, kind) =>
       options?.isPointKindVisible?.(group, kind) ?? true,
+    showEquipmentMarkers: () => options?.getShowModelMarkers?.() ?? false,
     is3d: () => viewMode.value === '3d',
-    isRoaming: () => modelRoaming.state.active,
+    isRoaming: () => modelRoaming.state.active || twin.state.active,
     getPartial: getPartialTileset,
     catalogUrl: `${import.meta.env.BASE_URL || '/'}三维数据/局部隧道竣工模型/scenetree.json`,
   })
 
   const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  const partialFx = usePartialTunnelFx({ getViewer: () => viewer.value })
+  /** 孪生仿真全景视角临时开启的竣工模型透视（不改用户的 X光 设置） */
+  let simXray = false
+
+  async function preparePartialTileset(): Promise<Cesium.Cesium3DTileset | null> {
+    const v = viewer.value
+    if (!v || v.isDestroyed()) return null
+    await ensureTunnelTilesets(v)
+    return (
+      getPartialTileset() ??
+      (await loadOneTileset(v, PARTIAL_TUNNEL_TILESET_PATH, 3, 'partial'))
+    )
+  }
+
+  function restoreAfterInterior() {
+    const v = viewer.value
+    if (!v || v.isDestroyed()) return
+    closeScenePopup()
+    applyPresentationMode()
+    syncDeviceGraphics()
+    applyVisualEnvironment(v)
+  }
+
   const modelRoaming = useModelRoaming({
     getViewer: () => viewer.value,
     prepare: async () => {
-      const v = viewer.value
-      if (!v || v.isDestroyed()) return null
-      await ensureTunnelTilesets(v)
-      return (
-        getPartialTileset() ??
-        (await loadOneTileset(v, PARTIAL_TUNNEL_TILESET_PATH, 3, 'partial'))
-      )
+      if (twin.isActive()) twin.stop()
+      return preparePartialTileset()
     },
     getTilesets: () => tunnelTilesets,
     getRoadXray: () => options?.getRoadXray?.() ?? false,
     onEnter: () => {
       closeScenePopup()
       modelSection.setPresentationActive(false)
+      partialFx.setSeeThrough(false)
+      partialFx.setRoamView(true, modelRoaming.state.layer)
       markers.sync()
     },
     onExit: () => {
-      const v = viewer.value
-      if (!v || v.isDestroyed()) return
-      closeScenePopup()
-      applyPresentationMode()
-      syncDeviceGraphics()
-      applyVisualEnvironment(v)
+      partialFx.setRoamView(false)
+      partialFx.setSeeThrough(true)
+      restoreAfterInterior()
     },
     onEquipment: (item) => emitEquipmentInfo(item),
   })
 
+  const twin = useTwinSimulation({
+    getViewer: () => viewer.value,
+    prepare: preparePartialTileset,
+    getTilesets: () => tunnelTilesets,
+    fx: partialFx,
+    setXray: (on) => {
+      if (simXray === on) return
+      simXray = on
+      applyTilesetStyles()
+    },
+    onEnter: () => {
+      if (modelRoaming.state.active || modelRoaming.state.loading)
+        modelRoaming.stop(false)
+      closeScenePopup()
+      modelSection.setPresentationActive(false)
+      partialFx.setRoamView(false)
+      partialFx.setAirflow(false)
+    },
+    onActivated: () => markers.sync(),
+    onExit: () => {
+      simXray = false
+      applyTilesetStyles()
+      restoreAfterInterior()
+    },
+  })
+
+  const is3dScene = () => {
+    const v = viewer.value
+    return (
+      viewMode.value === '3d' &&
+      !!v &&
+      !v.isDestroyed() &&
+      v.scene.mode === Cesium.SceneMode.SCENE3D
+    )
+  }
   /* ==========================================================
    * 流动动画：用 CallbackProperty 驱动，Cesium 每帧自动重算，
    * 相比ArcGIS 每帧 removeAll()+addMany() 重建 Graphic 有量级提升。
@@ -730,6 +785,8 @@ export function useCesiumTunnelMap(
   }
 
   function detachAllTunnelTilesets(v: Cesium.Viewer) {
+    twin.stop()
+    partialFx.detach()
     modelSection.clear()
     markers.clearEquipment()
     while (tunnelTilesets.length) {
@@ -743,7 +800,6 @@ export function useCesiumTunnelMap(
       if (!ts.isDestroyed()) ts.destroy()
     }
     xrayRestoresMap.clear()
-    selectedFresnelShader = null
     tilesetsLoading = null
   }
 
@@ -776,7 +832,11 @@ export function useCesiumTunnelMap(
       tunnelTilesets.push(tileset)
       if (role === 'bim' || role === 'partial') {
         void modelSection.register(tileset, role, url)
-        if (role === 'partial') void markers.loadEquipment(tileset)
+        if (role === 'partial') {
+          void markers.loadEquipment(tileset)
+          partialFx.attach(tileset)
+          applyTilesetStyles()
+        }
       }
       v.scene.requestRender()
       return tileset
@@ -835,7 +895,7 @@ export function useCesiumTunnelMap(
   ) {
     if (modelRoaming.state.active) return
     const brightness = bimBrightnessFactor()
-    const partialXray = options?.getPartialXray?.() ?? false
+    const partialXray = (options?.getPartialXray?.() ?? false) || simXray
     const bimAlpha = bimOpacityNow()
     tunnelTilesets.forEach((ts) => {
       const role = (ts as unknown as { __tunnelRole?: TilesetRole })
@@ -891,13 +951,8 @@ export function useCesiumTunnelMap(
           }
           ts.customShader = shader
         } else if (role === 'partial') {
-          if (selectedEquipmentId) {
-            if (!selectedFresnelShader)
-              selectedFresnelShader = createSelectedFresnelShader()
-            ts.customShader = selectedFresnelShader
-          } else {
-            ts.customShader = undefined
-          }
+          // 风机转动 Shader 常驻；选中态在同一 Shader 内叠加 Fresnel 高亮
+          ts.customShader = partialFx.shaderFor(!!selectedEquipmentId)
         }
       } catch {
         /* CustomShader 不可用时降级为 style */
@@ -912,7 +967,7 @@ export function useCesiumTunnelMap(
 
   /** 透视模式：施工透明 / 竣工 X光 时关闭对应模型背面剔除，便于透视内部构造 */
   function syncXrayMode() {
-    const partialXray = options?.getPartialXray?.() ?? false
+    const partialXray = (options?.getPartialXray?.() ?? false) || simXray
     const bimAlpha = bimOpacityNow()
     const wantBim = bimAlpha < 0.999
     const wantPartial = partialXray || !!selectedEquipmentId
@@ -1489,6 +1544,23 @@ export function useCesiumTunnelMap(
     Cesium.ScreenSpaceEventHandler
   >()
 
+  /** 风机构件补充实时工况（叶轮转速随通风模式 / 仿真接管变化） */
+  function fanProperties(item: ModelEquipment): Record<string, string> | null {
+    if (!/风机/.test(item.name) && !/风机/.test(item.category)) return null
+    const fan = partialFx.fanTelemetryNear(new Cesium.Cartesian3(...item.center))
+    if (!fan) return null
+    return {
+      运行状态: fan.running ? (partialFx.state.mode === 'exhaust' ? '排烟高速' : '运行') : '停机',
+      叶轮转速: `${fan.rpm} rpm`,
+      运行频率: `${fan.frequency} Hz`,
+      出口风速: `${fan.outletSpeed} m/s`,
+      射流方向: fan.direction,
+      数据说明: partialFx.state.overridden
+        ? `仿真接管：${partialFx.state.overrideLabel}`
+        : '工况演示数据，未接入风机 PLC',
+    }
+  }
+
   function emitEquipmentInfo(item: ModelEquipment | null) {
     options?.onModelSelect?.(
       item
@@ -1501,7 +1573,9 @@ export function useCesiumTunnelMap(
               构件编号: item.modelId,
               设备类别: item.category,
               数据来源: '竣工 BIM 独立构件',
-              说明: '位置来自真实模型，未接入设备实时状态',
+              ...(fanProperties(item) ?? {
+                说明: '位置来自真实模型，未接入设备实时状态',
+              }),
             },
           }
         : null,
@@ -1964,6 +2038,8 @@ export function useCesiumTunnelMap(
         markers,
         modelRoaming,
         modelSection,
+        partialFx,
+        twin,
         get selectedEquipmentId() {
           return selectedEquipmentId
         },
@@ -2040,6 +2116,7 @@ export function useCesiumTunnelMap(
     activeEnvironmentId = 'default'
     stopFlowLoop()
     clearSelectionGlow()
+    twin.stop()
     modelRoaming.stop(false)
     modelSection.clear()
     markers.destroy()
@@ -2079,6 +2156,7 @@ export function useCesiumTunnelMap(
       clickHandlers.delete(v)
       v.destroy()
     }
+    partialFx.destroy()
     activeBasemapMode = 'satellite'
     // Viewer.destroy() 会移除自身 DOM，这里再兜底清空以确保干净
     containerRef.value?.replaceChildren()
@@ -2115,7 +2193,10 @@ export function useCesiumTunnelMap(
     toggleRoamingPlayback: modelRoaming.togglePlay,
     seekRoaming: modelRoaming.seek,
     reverseRoaming: modelRoaming.reverse,
-    setRoamingLayer: modelRoaming.setLayer,
+    setRoamingLayer: (layer: 'lower' | 'upper') => {
+      modelRoaming.setLayer(layer)
+      if (modelRoaming.state.active) partialFx.setRoamView(true, layer)
+    },
     setRoamingEyeHeight: modelRoaming.setEyeHeight,
     setRoamingLateralOffset: modelRoaming.setLateralOffset,
     setRoamingDimStructure: modelRoaming.setDimStructure,
@@ -2141,5 +2222,22 @@ export function useCesiumTunnelMap(
     destroy,
     closeScenePopup,
     devicePopupAnchor,
+    ventilation: partialFx.state,
+    setFanSpin: partialFx.setSpin,
+    setAirflowVisible: partialFx.setAirflow,
+    setVentilationMode: partialFx.setMode,
+    setVentilationSpeed: partialFx.setSpeed,
+    twin: twin.state,
+    startTwin: twin.start,
+    stopTwin: twin.stop,
+    setTwinScenario: twin.setScenario,
+    toggleTwinPlay: twin.togglePlay,
+    restartTwin: twin.restart,
+    setTwinStep: twin.setStep,
+    setTwinView: twin.setView,
+    setTwinRate: twin.setRate,
+    setTwinOrbit: twin.setOrbit,
+    setTwinStereo: twin.setStereo,
+    isScene3D: is3dScene,
   }
 }

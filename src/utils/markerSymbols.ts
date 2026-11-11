@@ -56,41 +56,64 @@ export function hideBimMarkers(
     (previouslyHidden ? BIM_MARKER_REAPPEAR_DISTANCE : BIM_MARKER_NEAR_DISTANCE)
   )
 }
-const paths: Record<string, string> = {
-  camera:
-    '<rect x="5" y="8" width="10" height="8" rx="2"/><path d="m15 10 4-2v8l-4-2M9 18h4"/>',
-  dome: '<path d="M5 9h14M7 9a5 5 0 0 1 10 0M6 10v3a6 6 0 0 0 12 0v-3M10 18v2h4v-2"/>',
-  fan: '<circle cx="12" cy="12" r="2"/><path d="M12 10C5 2 4 14 10 13M14 12c11-2 1-11-1-3M11 14c-3 10 10 5 3-1"/>',
-  pump: '<path d="M3 7h4v10H3M17 7h4v10h-4M7 10h10v7H7zM9 10V6h6v4M10 20h5"/><circle cx="12" cy="13.5" r="1.5"/>',
-  sensor:
-    '<circle cx="12" cy="13" r="4"/><path d="M9 5a11 11 0 0 1 6 0M6 3a15 15 0 0 1 12 0M10 19h4M12 11v2l1 1"/>',
-  water:
-    '<path d="M12 3c-2 4-7 7-7 11a7 7 0 0 0 14 0c0-4-5-7-7-11ZM9 14a3 3 0 0 0 3 3"/>',
-  lamp: '<path d="M8 14a6 6 0 1 1 8 0l-1 3H9zM10 20h4M12 2v1M3 9h1M20 9h1"/>',
-  board:
-    '<rect x="3" y="5" width="18" height="11" rx="2"/><path d="M8 16v4M16 16v4M7 9h10M7 12h6"/>',
-  speaker: '<path d="M4 10h4l7-5v14l-7-5H4zM18 8a7 7 0 0 1 0 8"/>',
-  passage: '<path d="M5 20V4h14v16M9 12h9m-3-3 3 3-3 3M9 20h10"/>',
-  structure:
-    '<path d="M4 20v-9a8 8 0 0 1 16 0v9M8 20v-9a4 4 0 0 1 8 0v9M3 20h18M12 16v4"/>',
-  monitor:
-    '<path d="M3 12h4l3-7 4 14 3-7h4"/><rect x="2" y="3" width="20" height="18" rx="3"/>',
+/** 与设施设备图标清单一致。清单未单列的点位归到同组图标。 */
+const deviceIcons: Record<string, string> = {
+  fan: '🌀',
+  vent: '🌀',
+  damper: '🌀',
+  pump: '⚙️',
+  lamp: '💡',
+  illum: '☀️',
+  covi: '🌫️',
+  wind: '🌬️',
+  water: '💧',
+  waterLevel: '💧',
+  flame: '📡',
+  heatSensor: '📡',
+  smokeSensor: '📡',
+  laneInd: '🚹',
+  infoBoard: '🖥️',
+  speaker: '🖥️',
+  phone: '🖥️',
+  camera: '📹',
+  dome: '📹',
+  vehicleDet: '📹',
+  stress: '📏',
+  corrosion: '📏',
+  bolt: '📏',
+  pressure: '📏',
+  waterpress: '📏',
+  disease: '📏',
+  firePump: '🚒',
+  fireValve: '🚒',
+  fireStation: '🚒',
+  structureUp: '🧱',
+  structureDown: '🧱',
+  structure: '🧱',
+  pipe: '🔩',
+  passage: '🟢',
+  opsCenter: '🏢',
+  rainPump: '🌧️',
+  wastePump: '🚰',
+  substation: '⚡',
+  complaint: '📡',
 }
-function symbol(kind: string): string {
-  if (paths[kind]) return paths[kind]
-  if (/Pump|pump|Valve/.test(kind)) return paths.pump
-  if (/Sensor|covi|wind|illum/.test(kind))
-    return kind === 'illum' ? paths.lamp : paths.sensor
-  if (/infoBoard|laneInd/.test(kind)) return paths.board
-  if (/fan|vent|damper/.test(kind)) return paths.fan
-  if (/waterLevel/.test(kind)) return paths.water
-  if (
-    /corrosion|bolt|pressure|stress|waterpress|disease|complaint|vehicleDet/.test(
-      kind,
-    )
-  )
-    return paths.monitor
-  return paths.structure
+function deviceIcon(kind: string): string {
+  if (deviceIcons[kind]) return deviceIcons[kind]
+  if (/fan|vent|damper/.test(kind)) return '🌀'
+  if (/^pump$|waterPump|drain/.test(kind)) return '⚙️'
+  if (/firePump|fireValve|fireStation|Pump|Valve/.test(kind)) return '🚒'
+  if (/waterLevel|water/.test(kind)) return '💧'
+  if (kind === 'illum') return '☀️'
+  if (/lamp/.test(kind)) return '💡'
+  if (/covi/.test(kind)) return '🌫️'
+  if (/wind/.test(kind)) return '🌬️'
+  if (/infoBoard|speaker|phone/.test(kind)) return '🖥️'
+  if (/laneInd/.test(kind)) return '🚹'
+  if (/camera|dome|vehicleDet/.test(kind)) return '📹'
+  if (/stress|corrosion|bolt|pressure|waterpress|disease/.test(kind)) return '📏'
+  if (/Sensor|flame|smoke|heat|complaint/.test(kind)) return '📡'
+  return '🧱'
 }
 function pinFill(kind: string, status: string, selected: boolean): string {
   if (selected) return '#FF7702'
@@ -105,7 +128,79 @@ function pinFill(kind: string, status: string, selected: boolean): string {
   return '#7C93FF'
 }
 const cache = new Map<string, string>()
-/** 设备总览钉：分类色水滴 + 白图标 + 状态角标，告警/预警带光晕。 */
+
+function markerSvg(kind: string, status: string, selected: boolean): string {
+  const fill = pinFill(kind, status, selected)
+  const emoji = deviceIcon(kind)
+  const badge =
+    status === 'alarm'
+      ? `<circle cx="40" cy="10" r="6" fill="#FF4D5E" stroke="#fff" stroke-width="1.4"/><text x="40" y="12.2" text-anchor="middle" fill="#fff" font-size="9" font-family="Arial" font-weight="700">!</text>`
+      : status === 'warn'
+        ? `<circle cx="40" cy="10" r="6" fill="#FF9F1A" stroke="#fff" stroke-width="1.4"/><text x="40" y="12.2" text-anchor="middle" fill="#1a1200" font-size="9" font-family="Arial" font-weight="700">!</text>`
+        : status === 'offline'
+          ? `<circle cx="40" cy="10" r="5" fill="#9AA8B5" stroke="#fff" stroke-width="1.2"/>`
+          : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="80" viewBox="0 0 64 80"><ellipse cx="32" cy="74" rx="10" ry="3" fill="#021018" fill-opacity=".45"/><circle cx="32" cy="30" r="24" fill="${fill}" stroke="#fff" stroke-width="2"/><path d="M32 76 22 44h20z" fill="${fill}" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><circle cx="32" cy="30" r="18" fill="#fff"/><text x="32" y="37" text-anchor="middle" font-size="26">${emoji}</text>${badge}</svg>`
+}
+
+function markerCanvas(kind: string, status: string, selected: boolean): string {
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 160
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return `data:image/svg+xml,${encodeURIComponent(markerSvg(kind, status, selected))}`
+  const fill = pinFill(kind, status, selected)
+  ctx.clearRect(0, 0, 128, 160)
+  ctx.fillStyle = 'rgba(2, 8, 16, 0.4)'
+  ctx.beginPath()
+  ctx.ellipse(64, 148, 22, 6, 0, 0, Math.PI * 2)
+  ctx.fill()
+  if (status === 'alarm' || status === 'warn' || selected) {
+    ctx.fillStyle = fill
+    ctx.globalAlpha = 0.2
+    ctx.beginPath()
+    ctx.arc(64, 52, 48, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
+  ctx.beginPath()
+  ctx.arc(64, 58, 46, 0, Math.PI * 2)
+  ctx.moveTo(64, 150)
+  ctx.lineTo(48, 90)
+  ctx.lineTo(80, 90)
+  ctx.closePath()
+  ctx.fillStyle = fill
+  ctx.fill()
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 3
+  ctx.strokeStyle = '#ffffff'
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.arc(64, 58, 38, 0, Math.PI * 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+  ctx.font = '72px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(deviceIcon(kind), 64, 62)
+  if (status === 'alarm' || status === 'warn' || status === 'offline') {
+    ctx.beginPath()
+    ctx.arc(98, 22, 14, 0, Math.PI * 2)
+    ctx.fillStyle = status === 'alarm' ? '#FF4D5E' : status === 'warn' ? '#FF9F1A' : '#9AA8B5'
+    ctx.fill()
+    ctx.lineWidth = 3
+    ctx.strokeStyle = '#ffffff'
+    ctx.stroke()
+    if (status !== 'offline') {
+      ctx.fillStyle = status === 'alarm' ? '#ffffff' : '#1a1200'
+      ctx.font = '700 18px sans-serif'
+      ctx.fillText('!', 98, 23)
+    }
+  }
+  return canvas.toDataURL('image/png')
+}
+
+/** 设备钉：分类色水滴 + 清单内彩色图标 + 状态角标。 */
 export function markerSymbolUrl(
   kind: string,
   status = 'bim',
@@ -113,23 +208,10 @@ export function markerSymbolUrl(
 ): string {
   const key = `${kind}|${status}|${selected}`
   if (cache.has(key)) return cache.get(key)!
-  const fill = pinFill(kind, status, selected)
-  const halo =
-    status === 'alarm'
-      ? `<circle cx="24" cy="22" r="20" fill="${fill}" fill-opacity=".16"/><circle cx="24" cy="22" r="17" fill="none" stroke="${fill}" stroke-opacity=".45" stroke-width="1.2"/>`
-      : status === 'warn' || selected
-        ? `<circle cx="24" cy="22" r="18" fill="${fill}" fill-opacity=".12"/>`
-        : ''
-  const badge =
-    status === 'alarm'
-      ? `<circle cx="36" cy="8" r="6" fill="#FF4D5E" stroke="#fff" stroke-width="1.2"/><text x="36" y="10.2" text-anchor="middle" fill="#fff" font-size="8" font-family="Arial,sans-serif" font-weight="700">!</text>`
-      : status === 'warn'
-        ? `<circle cx="36" cy="8" r="6" fill="#FF9F1A" stroke="#fff" stroke-width="1.2"/><text x="36" y="10.2" text-anchor="middle" fill="#1a1200" font-size="8" font-family="Arial,sans-serif" font-weight="700">!</text>`
-        : status === 'offline'
-          ? `<circle cx="36" cy="8" r="5" fill="#9AA8B5" stroke="#fff" stroke-width="1"/>`
-          : ''
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="60" viewBox="0 0 48 60">${halo}<ellipse cx="24" cy="55" rx="7" ry="2.4" fill="#041018" fill-opacity=".35"/><path d="M24 2.5c-9.6 0-17.4 7.5-17.4 16.8C6.6 30.2 24 50.5 24 50.5S41.4 30.2 41.4 19.3C41.4 10 33.6 2.5 24 2.5z" fill="${fill}" stroke="#ffffff" stroke-opacity=".88" stroke-width="1.3"/><circle cx="24" cy="19.2" r="10.2" fill="#062033" fill-opacity=".28"/><g transform="translate(12 7.2)" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${symbol(kind)}</g>${badge}</svg>`
-  const url = `data:image/svg+xml,${encodeURIComponent(svg)}`
+  const url =
+    typeof document === 'undefined'
+      ? `data:image/svg+xml,${encodeURIComponent(markerSvg(kind, status, selected))}`
+      : markerCanvas(kind, status, selected)
   cache.set(key, url)
   return url
 }

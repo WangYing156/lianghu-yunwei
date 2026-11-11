@@ -87,10 +87,11 @@ test('真实模型设备目录包含风机、摄像头和消防泵，过滤整�
   )
   const equipment = parseModelEquipment(tree)
   assert.equal(equipment.filter((e) => e.category === '视频监控').length, 34)
-  assert.equal(
-    equipment.filter((e) => e.category === '通风设备' && e.name.includes('风机')).length,
-    18,
-  )
+  // 16 台射流风机，每台拆分为风机本体 / 八片扭转叶轮 / 顶部安装底板三个独立构件
+  const fans = equipment.filter((e) => e.category === '通风设备' && e.name.includes('风机'))
+  assert.equal(fans.length, 48)
+  assert.equal(fans.filter((e) => /^风机\d{3}$/.test(e.name)).length, 16)
+  assert.equal(fans.filter((e) => e.name.includes('八片扭转叶轮')).length, 16)
   assert.equal(equipment.filter((e) => e.category === '消防泵组').length, 5)
   assert.ok(equipment.every((e) => e.radius < 30 && e.center.every(Number.isFinite)))
   assert.equal(new Set(equipment.map((e) => e.id)).size, equipment.length)

@@ -153,6 +153,7 @@
         </div>
 
         <div class="map-vignette" aria-hidden="true"></div>
+        <slot name="overlay" :expanded="expanded" />
         <Transition name="scene-panel">
           <ModelRoamingPanel
             v-if="roaming.active || roaming.loading || roaming.error"
@@ -173,6 +174,18 @@
             @equipment="inspectRoamingEquipment"
           />
         </Transition>
+        <TwinSimHud
+          v-if="twin.active || twin.loading || (twin.error && simRequested)"
+          :state="twin"
+          :scenario="twinScenarioDef"
+          @play="toggleTwinPlay"
+          @step="setTwinStep"
+          @view="setTwinView"
+          @rate="setTwinRate"
+          @orbit="setTwinOrbit"
+          @stereo="onTwinStereo"
+          @exit="stopSimulation"
+        />
 
         <!-- 轻量场景 Dock：高级选项默认折叠，保留模型的展示空间 -->
         <div
@@ -254,11 +267,50 @@
               />
             </label>
             <p class="layer-help">
-              开启后远景自动聚合，点击数字展开<br />关闭后始终显示单体图标 · 告警独立显示
+              默认关闭，始终显示单体图标；开启后远景自动聚合，点击数字展开 · 告警独立显示
             </p>
             <p class="layer-count">
-              {{ markerStats.businessCount }} 个业务点 ·
-              {{ markerStats.modelCount }} 个真实 BIM 构件
+              {{ markerStats.businessCount }} 个业务点位（与原始方案一致）
+            </p>
+            <div class="layer-group-title">
+              竣工模型动态效果 <small>{{ fxSummary }}</small>
+            </div>
+            <label class="cluster-toggle">
+              <span>风机叶轮转动</span>
+              <el-switch v-model="fanSpin" size="small" />
+            </label>
+            <label class="cluster-toggle">
+              <span>气流流向（射流羽流 + 车道风向）</span>
+              <el-switch v-model="airflowVisible" size="small" />
+            </label>
+            <div class="fx-mode">
+              <el-radio-group
+                v-model="ventMode"
+                size="small"
+                :disabled="ventilation.overridden"
+              >
+                <el-radio-button value="normal">日常通风</el-radio-button>
+                <el-radio-button value="exhaust">火灾排烟</el-radio-button>
+                <el-radio-button value="stop">停机</el-radio-button>
+              </el-radio-group>
+              <label class="fx-speed"
+                ><span>负荷 {{ Math.round(ventSpeed * 100) }}%</span
+                ><el-slider
+                  v-model="ventSpeed"
+                  :min="0.2"
+                  :max="1"
+                  :step="0.05"
+                  :show-tooltip="false"
+                  size="small"
+                  :disabled="ventilation.overridden || ventMode === 'stop'"
+              /></label>
+            </div>
+            <label class="cluster-toggle">
+              <span>BIM 构件图标</span>
+              <el-switch v-model="showModelMarkers" size="small" />
+            </label>
+            <p class="layer-help">
+              叶轮按竣工模型真实构件轴心原位转动，启停带惯性；点选风机可查看实时转速。BIM 构件图标默认隐藏，构件仍可直接点选检视
             </p>
             <button
               v-if="markerStats.error"
@@ -440,7 +492,11 @@ import {
 import VChart from './VChart.vue'
 import { useRoute } from 'vue-router'
 import SceneSection from './SceneSection.vue'
-import { defaultPointGroups, mergeScenePoints } from '../config/scenePoints'
+import {
+  defaultPointGroups,
+  mergeScenePoints,
+  resolveScenePointId,
+} from '../config/scenePoints'
 import {
   sceneFocusRequest,
   consumeSceneFocus,
@@ -450,6 +506,7 @@ import { cameraForPoint } from '../config/cctvGallery'
 import { openVideoPreview } from '../composables/useVideoPreview'
 import SceneSettings from './SceneSettings.vue'
 import ModelRoamingPanel from './ModelRoamingPanel.vue'
+import TwinSimHud from './TwinSimHud.vue'
 import {
   Collection,
   FullScreen,
@@ -467,6 +524,8 @@ import {
   type SceneVisualPresetId,
 } from '../config/sceneVisualPresets'
 import { type SceneEnvironmentId } from '../config/sceneEnvironment'
+import { TWIN_SCENARIOS, type TwinScenarioId } from '../config/twinScenarios'
+import type { VentilationMode } from '../composables/usePartialTunnelFx'
 import {
   createMapPopupElement,
   disposeMapPopupChart,
@@ -500,6 +559,8 @@ const emit = defineEmits<{
       properties?: Record<string, string>
     },
   ): void
+  /** 巡游被用户退出（Esc / 退出按钮）导致孪生仿真结束 */
+  (e: 'simulation-exit'): void
 }>()
 
 /* 底图模式：卫星影像 / 电子地图 / 实景三维 */
@@ -521,7 +582,12 @@ const _initPreset = getSceneVisualPreset(sceneVisualPreset.value)
 const bimOpacity = ref(_initPreset.bimOpacityDefault)
 const partialXray = ref(false)
 const modelPickInfo = ref<ModelPickInfo | null>(null)
-const markerClustering = ref(true)
+const markerClustering = ref(false)
+const showModelMarkers = ref(false)
+const fanSpin = ref(true)
+const airflowVisible = ref(true)
+const ventMode = ref<VentilationMode>('normal')
+const ventSpeed = ref(1)
 const expanded = ref(false)
 const openLayerGroups = ref<string[]>([])
 
@@ -1119,6 +1185,21 @@ const {
   resetMapView,
   closeScenePopup,
   devicePopupAnchor,
+  ventilation,
+  setFanSpin,
+  setAirflowVisible,
+  setVentilationMode,
+  setVentilationSpeed,
+  twin,
+  startTwin,
+  stopTwin,
+  toggleTwinPlay,
+  setTwinStep,
+  setTwinView,
+  setTwinRate,
+  setTwinOrbit,
+  setTwinStereo,
+  isScene3D,
 } = useCesiumTunnelMap(
   mapContainerRef,
   () => visiblePoints.value.map(toMapDevice),
@@ -1143,6 +1224,7 @@ const {
     getPartialXray: () => partialXray.value,
     getRoadXray: () => roadXray.value,
     getAllDevices: () => allPoints.value.map(toMapDevice),
+    getShowModelMarkers: () => showModelMarkers.value,
     isPointKindVisible: (group, kind) => {
       const current = layerGroups.find((g) => g.key === group)
       return !!current?.on && current.items.includes(kind)
@@ -1191,11 +1273,13 @@ watch(
   },
 )
 
-async function locatePoint(id: string) {
+async function locatePoint(requestedId: string) {
   if (!mapReady.value) {
-    requestSceneFocus(id)
+    requestSceneFocus(requestedId)
     return
   }
+  const id = resolveScenePointId(requestedId, allPoints.value)
+  if (!id) return
   forceClosePopup()
   // BIM 视频的重新定位/聚合列表也可能来自二维；同步 UI 意图后再交给场景检视。
   if (id.startsWith('bim:') && mapViewMode.value !== '3d')
@@ -1211,7 +1295,105 @@ async function locatePoint(id: string) {
   await nextTick()
   if (!disposed) focusDeviceById(id)
 }
+
+/* ===== 竣工模型动效开关 ===== */
+const fxSummary = computed(() =>
+  ventilation.overridden
+    ? `仿真接管 · ${ventilation.overrideLabel}`
+    : `${ventilation.runningFans}/${ventilation.fanCount} 台射流风机运行`,
+)
+watch(fanSpin, (v) => setFanSpin(v))
+watch(airflowVisible, (v) => setAirflowVisible(v))
+watch(ventMode, (m) => setVentilationMode(m))
+watch(ventSpeed, (s) => setVentilationSpeed(s))
+watch(showModelMarkers, () => syncDeviceGraphics())
+
+/* ===== 孪生 VR 仿真：主 Viewer 内构建工况特效，HUD 叠加在场景内 ===== */
+let simSequence = 0
+let simExpanded = false
+const simRequested = ref(false)
+const twinScenarioDef = computed(() => TWIN_SCENARIOS[twin.scenario])
+
+function waitUntil(test: () => boolean, timeout: number): Promise<boolean> {
+  const t0 = performance.now()
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (disposed) return resolve(false)
+      if (test()) return resolve(true)
+      if (performance.now() - t0 > timeout) return resolve(false)
+      window.setTimeout(tick, 100)
+    }
+    tick()
+  })
+}
+
+async function startSimulation(
+  id: TwinScenarioId,
+  step = 0,
+  immersive = false,
+): Promise<boolean> {
+  const seq = ++simSequence
+  forceClosePopup()
+  if (immersive && !expanded.value) {
+    simExpanded = true
+    expanded.value = true
+    await nextTick()
+  }
+  if (mapViewMode.value !== '3d') mapViewMode.value = '3d'
+  if (!(await waitUntil(() => mapReady.value && isScene3D(), 8000))) return false
+  if (seq !== simSequence) return false
+  simRequested.value = true
+  await startTwin(id)
+  if (seq !== simSequence || !twin.active) return false
+  if (step > 0) setTwinStep(step)
+  return true
+}
+
+function stopSimulation() {
+  simSequence++
+  simRequested.value = false
+  stopTwin()
+  if (twin.stereo) setTwinStereo(false)
+}
+
+/** VR 分屏需要尽量大的画幅：开启时自动放大场景 */
+function onTwinStereo(on: boolean) {
+  if (on && !expanded.value) {
+    expanded.value = true
+    simExpanded = true
+  }
+  void nextTick(() => setTwinStereo(on))
+}
+
+watch(
+  () => twin.active,
+  (active, was) => {
+    if (active) {
+      airflowVisible.value = false
+      setAirflowVisible(false)
+      return
+    }
+    if (!was) return
+    simRequested.value = false
+    if (simExpanded) {
+      expanded.value = false
+      simExpanded = false
+    }
+    emit('simulation-exit')
+  },
+)
+
 defineExpose({
+  startSimulation,
+  stopSimulation,
+  setSimulationStep: (step: number) => setTwinStep(step),
+  toggleSimulationPlay: () => toggleTwinPlay(),
+  simulation: twin,
+  roaming,
+  toggleRoamingPlayback,
+  setExpanded: (value: boolean) => {
+    expanded.value = value
+  },
   locatePoint,
   startRoaming: () => {
     if (!roaming.active && !roaming.loading) void toggleRoaming()
@@ -1460,6 +1642,20 @@ function historyOption(p: ScenePoint) {
   justify-content: space-between;
   margin-top: 12px;
   color: #d5e6f4;
+  font-size: 12px;
+}
+.fx-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.fx-speed {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  align-items: center;
+  gap: 8px;
+  color: #9fb6cc;
   font-size: 12px;
 }
 .layer-help {

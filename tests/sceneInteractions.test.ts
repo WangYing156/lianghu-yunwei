@@ -20,7 +20,12 @@ import {
   createRoamingEntry,
   advanceRoamingProgress,
 } from '../src/utils/roamingPath'
-import { defaultPointGroups, mergeScenePoints } from '../src/config/scenePoints'
+import {
+  BASE_SCENE_POINTS,
+  defaultPointGroups,
+  mergeScenePoints,
+  resolveScenePointId,
+} from '../src/config/scenePoints'
 import { DEMO_ALERTS } from '../src/config/alerts'
 import { CCTV_CAMERAS, cameraForPoint } from '../src/config/cctvGallery'
 import {
@@ -72,7 +77,7 @@ test('二维聚焦覆盖窄屏、超宽场景和异常宽高比，不产生无�
   }
 })
 test('业务点的坐标使用全量目录，图层显隐不改变无桩号设施位置', () => {
-  const all = mergeScenePoints([])
+  const all = mergeScenePoints(BASE_SCENE_POINTS)
   const point = all.find((p) => !/K\d\+\d{3}/.test(p.stake))!
   const route = {
     pointAt: (t: number) => [114.35 + t * 0.02, 30.49 + t * 0.02],
@@ -90,7 +95,7 @@ test('六个业务模块严格使用要求的默认分组，开启的图层都�
     service: ['structure'],
     asset: ['structure', 'env', 'traffic', 'monitor', 'mep'],
   }
-  const points = mergeScenePoints([])
+  const points = BASE_SCENE_POINTS
   for (const [module, groups] of Object.entries(expected)) {
     assert.deepEqual(defaultPointGroups(`/${module}`), groups)
     for (const group of groups)
@@ -100,38 +105,42 @@ test('六个业务模块严格使用要求的默认分组，开启的图层都�
       )
   }
 })
-test('页面业务点覆盖共享同 ID/类型桩号，同时保留独立告警和摄像机锚点', () => {
-  const base = mergeScenePoints([]).find((p) => p.group === 'monitor')!
-  const override = { ...base, name: '页面专用监测点' }
-  const points = mergeScenePoints([override])
-  assert.equal(points.filter((p) => p.id === base.id).length, 1)
-  assert.equal(points.find((p) => p.id === base.id)?.name, '页面专用监测点')
-  assert.equal(new Set(points.map((p) => p.id)).size, points.length)
+test('场景只展示页面传入的原始方案点位：不注入共享/告警/摄像机点，同 ID 去重', () => {
+  assert.equal(BASE_SCENE_POINTS.length, 38)
+  assert.equal(new Set(BASE_SCENE_POINTS.map((p) => p.id)).size, 38)
+  assert.deepEqual(mergeScenePoints(BASE_SCENE_POINTS), BASE_SCENE_POINTS)
+  const page = BASE_SCENE_POINTS.slice(0, 5)
+  assert.deepEqual(mergeScenePoints(page), page)
+  assert.deepEqual(mergeScenePoints([]), [])
+  const override = { ...page[0], name: '页面专用监测点' }
+  const merged = mergeScenePoints([page[0], override])
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].name, '页面专用监测点')
+  assert.ok(BASE_SCENE_POINTS.every((p) => !p.simulated))
 })
-test('每条告警精确链接独立模拟点、桩号和类型，全部使用动态优先标注', () => {
-  const points = mergeScenePoints([])
+test('告警定位映射到同桩号同类型的原始点位，找不到时退化为最近桩号', () => {
   for (const alert of DEMO_ALERTS) {
-    const point = points.find((p) => p.id === alert.pointId)!
+    const id = resolveScenePointId(alert.pointId, BASE_SCENE_POINTS)
+    const point = BASE_SCENE_POINTS.find((p) => p.id === id)
     assert.ok(point, alert.id)
-    assert.equal(point.stake, alert.stake)
-    assert.equal(point.group, alert.group)
-    assert.equal(point.kind, alert.kind)
-    assert.equal(point.simulated, true)
-    assert.equal(point.alertId, alert.id)
-    assert.match(point.alarm!, /模拟/)
-    assert.ok(isPriorityMarker(point.status, point.alarm))
+    const exact = BASE_SCENE_POINTS.find(
+      (p) => p.kind === alert.kind && p.stake === alert.stake,
+    )
+    if (exact) assert.equal(point.id, exact.id)
   }
+  const own = BASE_SCENE_POINTS[0].id
+  assert.equal(resolveScenePointId(own, BASE_SCENE_POINTS), own)
+  assert.equal(resolveScenePointId('bim:abc', BASE_SCENE_POINTS), 'bim:abc')
+  assert.equal(resolveScenePointId('unknown-id', []), null)
   assert.ok(isPriorityMarker('offline', '离线告警'))
   assert.ok(isPriorityMarker('ok', undefined, true))
   assert.equal(isPriorityMarker('ok'), false)
 })
-test('重点监控的 ID、桩号和地图锚点一一匹配；示例画面不冒充实时流', () => {
-  const points = mergeScenePoints([])
+test('重点监控锚点映射到原始摄像机点位；示例画面不冒充实时流', () => {
   for (const camera of CCTV_CAMERAS) {
-    const point = points.find((p) => p.id === camera.pointId)!
-    assert.equal(point.stake, camera.stake)
-    assert.equal(point.videoId, camera.id)
-    assert.equal(cameraForPoint(point), camera)
+    const id = resolveScenePointId(camera.pointId, BASE_SCENE_POINTS)
+    const point = BASE_SCENE_POINTS.find((p) => p.id === id)
+    assert.ok(point, camera.id)
     assert.equal(camera.streamUrl, undefined)
   }
   const custom = { id: 'bim:真实设备-23', name: 'BIM 摄像机', stake: '构件 23' }
@@ -207,8 +216,8 @@ test('构件名称/ID 有特殊字符时，样式表达式仍正确匹配', () =
   )
   assert.deepEqual(color, Color.fromCssColorString('#FF7702'))
 })
-test('138 个真实构件均映射到独立类别/分组，不把合并的灯带/道路伪装为独立设备', () => {
-  assert.equal(equipment.length, 138)
+test('165 个真实构件均映射到独立类别/分组，不把合并的灯带/道路伪装为独立设备', () => {
+  assert.equal(equipment.length, 165)
   for (const item of equipment) {
     const { group, kind } = equipmentPointType(item)
     assert.ok(['structure', 'env', 'traffic', 'monitor', 'mep'].includes(group))

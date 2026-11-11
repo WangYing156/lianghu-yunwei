@@ -38,6 +38,8 @@ interface MarkerOptions {
   isRoaming: () => boolean
   getPartial: () => Cesium.Cesium3DTileset | null
   catalogUrl: string
+  /** BIM 构件是否以图标点位展示；默认不展示，点位严格以业务页面点位为准，构件仍可点选检视 */
+  showEquipmentMarkers?: () => boolean
 }
 /** 原生屏幕空间聚合 + 告警/选中独立优先层 + BIM 近景退场，避免逐帧 N² 碰撞检测。 */
 export function useSceneMarkers(options: MarkerOptions) {
@@ -58,7 +60,8 @@ export function useSceneMarkers(options: MarkerOptions) {
   let catalogSequence = 0
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
   const clusterHistory: { members: string[]; position: number[] }[] = []
-  let clusteringWanted = true
+  let clusteringWanted = false
+  const equipmentMarkersShown = () => options.showEquipmentMarkers?.() ?? false
 
   async function initialize(v: Cesium.Viewer) {
     normal = new Cesium.CustomDataSource('设施与 BIM 构件（自动聚合）')
@@ -194,8 +197,9 @@ export function useSceneMarkers(options: MarkerOptions) {
         motion.matches ? 1 : 1 + (Math.sin(performance.now() / 650) + 1) * 0.08
       entity.billboard = new Cesium.BillboardGraphics({
         image: markerSymbolUrl(point.kind, point.status, selected),
-        width: selected ? 36 : 30,
-        height: selected ? 45 : 38,
+        width: selected ? 68 : 62,
+        height: selected ? 84 : 76,
+        scaleByDistance: new Cesium.NearFarScalar(40, 1.05, 3500, 0.92),
         scale: urgent ? new Cesium.CallbackProperty(pulse, false) : 1,
         verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
@@ -225,7 +229,9 @@ export function useSceneMarkers(options: MarkerOptions) {
   }
   function syncModel() {
     const ts = options.getPartial()
-    const ids = new Set(equipment.value.map((e) => e.id))
+    const ids = new Set(
+      equipmentMarkersShown() ? equipment.value.map((e) => e.id) : [],
+    )
     model.forEach((entity, id) => {
       if (!ids.has(id)) {
         remove(entity)
@@ -234,6 +240,7 @@ export function useSceneMarkers(options: MarkerOptions) {
     })
     let count = 0
     equipment.value.forEach((item) => {
+      if (!ids.has(item.id)) return
       const type = equipmentPointType(item)
       const enabled = options.isKindVisible(type.group, type.kind)
       if (enabled) count++
@@ -252,8 +259,9 @@ export function useSceneMarkers(options: MarkerOptions) {
       const selected = item.id === options.getSelectedEquipmentId()
       entity.billboard = new Cesium.BillboardGraphics({
         image: markerSymbolUrl(type.kind, 'bim', selected),
-        width: selected ? 36 : 30,
-        height: selected ? 45 : 38,
+        width: selected ? 60 : 54,
+        height: selected ? 74 : 66,
+        scaleByDistance: new Cesium.NearFarScalar(20, 1.05, 400, 0.7),
         verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
         distanceDisplayCondition: new Cesium.DistanceDisplayCondition(
           BIM_MARKER_NEAR_DISTANCE,
@@ -275,7 +283,7 @@ export function useSceneMarkers(options: MarkerOptions) {
     const v = options.getViewer()
     if (!v || v.isDestroyed()) return
     let nearest = Number.POSITIVE_INFINITY
-    if (options.is3d() && !options.isRoaming())
+    if (equipmentMarkersShown() && options.is3d() && !options.isRoaming())
       for (const item of equipment.value)
         nearest = Math.min(
           nearest,

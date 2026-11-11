@@ -2,7 +2,7 @@
   <el-dialog
     :model-value="!!previewCamera"
     :width="maximized ? 'calc(100vw - 40px)' : 'min(940px, 92vw)'"
-    top="8vh"
+    top="18vh"
     :modal="false"
     append-to-body
     draggable
