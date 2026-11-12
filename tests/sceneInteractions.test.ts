@@ -86,13 +86,13 @@ test('业务点的坐标使用全量目录，图层显隐不改变无桩号设�
   for (let i = 0; i < 10; i++)
     assert.deepEqual(geoForPointOnRoute(route, point, all), location)
 })
-test('六个业务模块严格使用要求的默认分组，开启的图层都有共享点位', () => {
+test('六个业务模块默认分组与页面原始点位一致，不产生空图层', () => {
   const expected = {
-    traffic: ['structure', 'traffic'],
-    maintenance: ['structure', 'monitor'],
-    monitoring: ['structure', 'env', 'monitor'],
-    emergency: ['structure', 'env', 'mep'],
-    service: ['structure'],
+    traffic: ['traffic'],
+    maintenance: ['monitor'],
+    monitoring: ['env', 'monitor'],
+    emergency: ['env', 'mep', 'structure'],
+    service: ['monitor'],
     asset: ['structure', 'env', 'traffic', 'monitor', 'mep'],
   }
   const points = BASE_SCENE_POINTS

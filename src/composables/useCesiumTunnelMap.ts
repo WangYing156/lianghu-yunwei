@@ -333,6 +333,16 @@ export function useCesiumTunnelMap(
   const partialFx = usePartialTunnelFx({ getViewer: () => viewer.value })
   /** 孪生仿真全景视角临时开启的竣工模型透视（不改用户的 X光 设置） */
   let simXray = false
+  /** 仿真会临时接管风机气流显示；退出时恢复进入前的用户状态 */
+  let twinFxRestore: { airflow: boolean; seeThrough: boolean } | null = null
+
+  function restoreTwinFxState() {
+    const saved = twinFxRestore
+    twinFxRestore = null
+    if (!saved) return
+    partialFx.setAirflow(saved.airflow)
+    partialFx.setSeeThrough(saved.seeThrough)
+  }
 
   async function preparePartialTileset(): Promise<Cesium.Cesium3DTileset | null> {
     const v = viewer.value
@@ -389,13 +399,20 @@ export function useCesiumTunnelMap(
     onEnter: () => {
       if (modelRoaming.state.active || modelRoaming.state.loading)
         modelRoaming.stop(false)
+      // 先结束巡游，再记录“正常外部场景”下的状态；否则会把巡游态误存为用户设置。
+      twinFxRestore = {
+        airflow: partialFx.state.airflow,
+        seeThrough: partialFx.state.seeThrough,
+      }
       closeScenePopup()
       modelSection.setPresentationActive(false)
       partialFx.setRoamView(false)
-      partialFx.setAirflow(false)
+      // 仿真期间保留真实风机气流，不再把动效整体关掉造成风机像静止贴图。
+      partialFx.setAirflow(true)
     },
     onActivated: () => markers.sync(),
     onExit: () => {
+      restoreTwinFxState()
       simXray = false
       applyTilesetStyles()
       restoreAfterInterior()
@@ -2058,6 +2075,8 @@ export function useCesiumTunnelMap(
   async function setViewMode(mode: MapViewMode) {
     if (modelRoaming.state.active || modelRoaming.state.loading)
       modelRoaming.stop(false)
+    // 二维/正交投影与仿真内的第一人称、立体分屏不兼容，先干净退出再切换维度。
+    if (twin.isActive()) twin.stop()
     viewMode.value = mode
     const v = viewer.value
     // viewer 尚未就绪时只记录意图，mount 完成后会依据标记补应用，
@@ -2148,15 +2167,20 @@ export function useCesiumTunnelMap(
       }
       if (host.__tunnelCesium?.viewer === v) delete host.__tunnelCesium
     }
-    viewer.value = null
     if (v && !v.isDestroyed()) {
       if (v.scene.mode === Cesium.SceneMode.MORPHING) v.scene.completeMorph()
+      // 先摘掉 tileset / 自定义 shader / 气流图元，再销毁 Viewer，
+      // 避免 Scene.destroy 再次销毁已释放的 PrimitiveCollection。
       detachAllTunnelTilesets(v)
+      partialFx.destroy()
       clickHandlers.get(v)?.destroy()
       clickHandlers.delete(v)
+      viewer.value = null
       v.destroy()
+    } else {
+      viewer.value = null
+      partialFx.destroy()
     }
-    partialFx.destroy()
     activeBasemapMode = 'satellite'
     // Viewer.destroy() 会移除自身 DOM，这里再兜底清空以确保干净
     containerRef.value?.replaceChildren()
@@ -2238,6 +2262,7 @@ export function useCesiumTunnelMap(
     setTwinRate: twin.setRate,
     setTwinOrbit: twin.setOrbit,
     setTwinStereo: twin.setStereo,
+    clearTwinError: twin.clearError,
     isScene3D: is3dScene,
   }
 }

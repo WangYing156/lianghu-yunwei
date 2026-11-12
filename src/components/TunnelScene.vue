@@ -178,17 +178,21 @@
           v-if="twin.active || twin.loading || (twin.error && simRequested)"
           :state="twin"
           :scenario="twinScenarioDef"
+          :expanded="expanded"
           @play="toggleTwinPlay"
           @step="setTwinStep"
           @view="setTwinView"
           @rate="setTwinRate"
           @orbit="setTwinOrbit"
           @stereo="onTwinStereo"
+          @fullscreen="toggleTwinFullscreen"
+          @dismiss-error="clearTwinError"
           @exit="stopSimulation"
         />
 
         <!-- 轻量场景 Dock：高级选项默认折叠，保留模型的展示空间 -->
         <div
+          v-if="!twin.active && !twin.loading"
           class="scene-toolbar scene-toolbar--float"
           aria-label="三维场景工具栏"
           @pointerdown.stop
@@ -198,10 +202,10 @@
             trigger="click"
             placement="top"
             popper-class="layer-pop"
-            :disabled="roaming.active"
+            :disabled="sceneLocked"
           >
             <template #reference
-              ><button type="button" class="tb-act" :disabled="roaming.active">
+              ><button type="button" class="tb-act" :disabled="sceneLocked">
                 <el-icon><Collection /></el-icon><span>图层</span>
               </button></template
             >
@@ -323,7 +327,7 @@
           </el-popover>
           <SceneSettings
             :ready="mapReady"
-            :disabled="roaming.active || roaming.loading"
+            :disabled="sceneLocked"
             v-model:basemap="basemap"
             v-model:view-mode="mapViewMode"
             v-model:basemap-enabled="basemapEnabled"
@@ -340,7 +344,7 @@
           <SceneSection
             :ready="mapReady"
             :disabled="
-              mapViewMode !== '3d' || roaming.active || roaming.loading
+              mapViewMode !== '3d' || sceneLocked
             "
             :state="section"
             @update="updateSection"
@@ -351,7 +355,7 @@
             type="button"
             class="tb-act tb-act--primary"
             :class="{ on: roaming.active }"
-            :disabled="!mapReady || mapViewMode !== '3d'"
+            :disabled="!mapReady || mapViewMode !== '3d' || sceneLocked"
             :title="
               mapViewMode !== '3d'
                 ? '请先在场景设置中切换三维视图'
@@ -375,7 +379,7 @@
           <button
             type="button"
             class="tb-act tb-act--icon"
-            :disabled="!mapReady"
+            :disabled="!mapReady || sceneLocked"
             title="复位视角"
             aria-label="复位视角"
             @click="onResetView"
@@ -760,6 +764,7 @@ function clearGroupItems(g: (typeof layerGroups)[number]) {
 }
 
 function onResetView() {
+  if (twin.active || twin.loading) return
   stopRoaming(false)
   forceClosePopup()
   void resetMapView()
@@ -767,6 +772,8 @@ function onResetView() {
 
 let autoExpanded = false
 async function toggleRoaming() {
+  // 仿真接管相机时不允许再启动路径巡游，避免两套相机循环互相抢控制权。
+  if (twin.active || twin.loading) return
   if (roaming.active || roaming.loading) stopRoaming()
   else {
     forceClosePopup()
@@ -1199,6 +1206,7 @@ const {
   setTwinRate,
   setTwinOrbit,
   setTwinStereo,
+  clearTwinError,
   isScene3D,
 } = useCesiumTunnelMap(
   mapContainerRef,
@@ -1297,6 +1305,10 @@ async function locatePoint(requestedId: string) {
 }
 
 /* ===== 竣工模型动效开关 ===== */
+/** 巡游或孪生仿真接管相机时，普通场景设置/剖切/复位都应暂时锁定 */
+const sceneLocked = computed(
+  () => roaming.active || roaming.loading || twin.active || twin.loading,
+)
 const fxSummary = computed(() =>
   ventilation.overridden
     ? `仿真接管 · ${ventilation.overrideLabel}`
@@ -1331,6 +1343,7 @@ async function startSimulation(
   id: TwinScenarioId,
   step = 0,
   immersive = false,
+  restart = false,
 ): Promise<boolean> {
   const seq = ++simSequence
   forceClosePopup()
@@ -1343,9 +1356,16 @@ async function startSimulation(
   if (!(await waitUntil(() => mapReady.value && isScene3D(), 8000))) return false
   if (seq !== simSequence) return false
   simRequested.value = true
-  await startTwin(id)
-  if (seq !== simSequence || !twin.active) return false
-  if (step > 0) setTwinStep(step)
+  // 步骤与重启动作交给状态机一次完成，避免外部再 setStep 造成“切工况却沿用旧步骤”。
+  const ok = await startTwin(id, step, { restart })
+  if (seq !== simSequence) return false
+  if (!ok || !twin.active) {
+    if (simExpanded) {
+      expanded.value = false
+      simExpanded = false
+    }
+    return false
+  }
   return true
 }
 
@@ -1353,7 +1373,17 @@ function stopSimulation() {
   simSequence++
   simRequested.value = false
   stopTwin()
-  if (twin.stereo) setTwinStereo(false)
+}
+
+/** HUD 内放大：仿真时隐藏普通工具栏，仍保留大图切换 */
+function toggleTwinFullscreen() {
+  if (!expanded.value) {
+    simExpanded = true
+    expanded.value = true
+  } else {
+    expanded.value = false
+    simExpanded = false
+  }
 }
 
 /** VR 分屏需要尽量大的画幅：开启时自动放大场景 */
@@ -1368,12 +1398,10 @@ function onTwinStereo(on: boolean) {
 watch(
   () => twin.active,
   (active, was) => {
-    if (active) {
-      airflowVisible.value = false
-      setAirflowVisible(false)
-      return
-    }
+    if (active) return
     if (!was) return
+    // onExit 已恢复进入前的气流开关；同步 UI ref，避免退出后动效开关停在错误状态。
+    airflowVisible.value = ventilation.airflow
     simRequested.value = false
     if (simExpanded) {
       expanded.value = false
@@ -1415,11 +1443,12 @@ watch(
 )
 
 function onEscClose(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    stopResize()
-    forceClosePopup()
-    expanded.value = false
-  }
+  if (e.key !== 'Escape') return
+  // 仿真中的 Esc 由 TwinSimulation 处理（先退 VR 分屏，再退仿真），这里不要抢先收起大图。
+  if (twin.active || twin.loading) return
+  stopResize()
+  forceClosePopup()
+  expanded.value = false
 }
 
 onMounted(() => {

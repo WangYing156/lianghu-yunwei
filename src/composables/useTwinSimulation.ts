@@ -1,10 +1,10 @@
 /**
  * 孪生 VR 仿真推演：在主 Viewer 内（不新开 WebGL 上下文）基于局部竣工模型真实双层路面构建应急场景。
  *
- * - 火灾：火焰 / 烟气粒子（未排烟双向蔓延 → 排烟后压向下游），射流风机 / 加压送风接管，疏散诱导流线；
- * - 积水：沿纵坡汇水粒子，水面随液位涨落（按真实坡度裁剪淹没长度），泵井抽排流线，车道封闭；
- * - 事故：追尾车辆、排队蔓延、锥桶渐变封闭、车道指示器、救援车进场与管制解除；
- * - 巡检：第一人称沿下层路面巡游，风机实时转速标签，异常停机标注。
+ * - 火灾：消防车、分道撤离的社会车辆、火焰 / 烟气粒子、射流风机 / 加压送风接管与疏散诱导流线；
+ * - 积水：沿纵坡汇水粒子、按真实坡度裁剪的水平水面、泵站叶轮 / 集水井、黄色诱导线与干燥车道绕行车流；
+ * - 事故：追尾车辆、排队蔓延、锥桶渐变封闭、救援车、清障拖离与开放车道的低速过车；
+ * - 巡检：第一人称沿下层路面巡游，风机推演转速标签，异常停机标注。
  * 视角：全景环绕（结构透视）/ 事件近景（模型内部）/ 第一人称行进；支持 Cesium 立体分屏 VR。
  * 所有特效挂在一个 PrimitiveCollection 下，停止时整体移除并恢复全部场景状态。
  */
@@ -13,6 +13,7 @@ import * as Cesium from 'cesium'
 import { PARTIAL_ROAMING_ROUTES } from '../config/partialRoamingRoutes'
 import { PARTIAL_MC_TO_TILESET } from '../config/partialFanRig'
 import {
+  fireVentilationPlan,
   TWIN_SCENARIOS,
   type TwinDevice,
   type TwinScenarioId,
@@ -26,6 +27,23 @@ import {
   type Point3,
   type RoamingPath,
 } from '../utils/roamingPath'
+import {
+  scenarioDuration,
+  solveFloodExtent,
+  walkAlongAtStep,
+} from '../utils/simulationPhysics'
+import {
+  emptyClearanceAudit,
+  resolveVehicleTraffic,
+  TUNNEL_LANE_GUIDES,
+  TWIN_SAFE_LANES,
+  type ClearanceAudit,
+  type ClearanceOptions,
+  type ClearanceSolution,
+  type GuideLine,
+  type StaticObstacle,
+  type VehicleRequest,
+} from '../utils/simulationClearance'
 import {
   createFlowMaterial,
   createUnitQuadGeometry,
@@ -55,6 +73,8 @@ export interface TwinSimState {
   stereo: boolean
   telemetry: TwinTelemetry[]
   devices: TwinDevice[]
+  /** 每帧车辆/标线/静态设施净距校核结果，供 HUD 与浏览器回归读取 */
+  clearance: ClearanceAudit
 }
 
 interface SimOptions {
@@ -84,12 +104,16 @@ interface ScenarioFx {
   /** 第一人称起点（相对事件） */
   walkFrom: number
   walkTo: number
+  /** 第一人称机位横向位置；事件工况走右侧检修带，巡检走车道 */
+  walkLateral?: number
   /** 近景基准进度，缺省用事件进度 */
   cameraProgress?: number
   update: (t: number, dt: number, step: number, k: number) => void
   onStep?: (step: number) => void
   /** 巡检：由行进进度驱动步骤 */
   walkDriven?: boolean
+  /** 当前帧空间净距校核快照 */
+  audit?: () => ClearanceAudit
 }
 
 interface Vehicle {
@@ -98,6 +122,9 @@ interface Vehicle {
   height: number
   set: (f: Frame | null, yaw?: number) => void
 }
+
+/** 专用车辆在通用车身之外增加可识别的装备，仍共用一套净距包络。 */
+type VehicleRole = 'car' | 'fireEngine' | 'towTruck'
 
 interface SceneCaption {
   text: string
@@ -131,6 +158,7 @@ export function useTwinSimulation(options: SimOptions) {
     stereo: false,
     telemetry: [],
     devices: [],
+    clearance: emptyClearanceAudit(),
   })
 
   let v: Cesium.Viewer | null = null
@@ -154,6 +182,9 @@ export function useTwinSimulation(options: SimOptions) {
   let sequence = 0
   let interiorOn = false
   let savedInterior: (() => void) | null = null
+  /** onEnter 已改动过外部场景状态；即使加载失败/被取消也要调用 onExit 复原 */
+  let enterPending = false
+  let errorTimer = 0
 
   const viewer = () => {
     const x = options.getViewer()
@@ -377,7 +408,13 @@ export function useTwinSimulation(options: SimOptions) {
 
   const wheelSpin = Cesium.Matrix3.fromRotationX(Math.PI / 2)
 
-  function addVehicle(length: number, width: number, height: number, color: string): Vehicle {
+  function addVehicle(
+    length: number,
+    width: number,
+    height: number,
+    color: string,
+    role: VehicleRole = 'car',
+  ): Vehicle {
     const truck = length >= 6
     const paint = Cesium.Color.fromCssColorString(color)
     const glass = new Cesium.Color(0.05, 0.12, 0.2, 0.96)
@@ -417,9 +454,35 @@ export function useTwinSimulation(options: SimOptions) {
     const tireR = truck ? 0.46 : 0.34
     const tires = wheelPos.map(() => addWheel(tireR, truck ? 0.24 : 0.18, trim))
     const rims = wheelPos.map(() => addWheel(tireR * 0.52, truck ? 0.26 : 0.2, silver))
+    /** 装备偏移在 set() 内按当前轮胎半径计算，避免车身高度变化导致悬空或穿面。 */
+    const equipment: {
+      prim: Cesium.Primitive
+      offset: (z: number) => Cesium.Cartesian3
+      wheel?: boolean
+    }[] = []
+    if (role === 'fireEngine') {
+      const tank = addBox(new Cesium.Cartesian3(length * 0.34, width * 0.76, 0.14), new Cesium.Color(0.85, 0.11, 0.1, 1))
+      equipment.push({ prim: tank, offset: (z) => new Cesium.Cartesian3(-length * 0.08, 0, z + height * 0.38) })
+      const ladder = addBox(new Cesium.Cartesian3(length * 0.5, 0.18, 0.06), silver)
+      equipment.push({ prim: ladder, offset: (z) => new Cesium.Cartesian3(-length * 0.1, 0, z + height * 0.67) })
+      for (const side of [-1, 1]) {
+        const locker = addBox(new Cesium.Cartesian3(length * 0.4, 0.07, height * 0.16), silver)
+        equipment.push({ prim: locker, offset: (z) => new Cesium.Cartesian3(-length * 0.1, side * width * 0.5, z + height * 0.3) })
+        const reel = addWheel(0.22, 0.1, trim)
+        equipment.push({ prim: reel, offset: (z) => new Cesium.Cartesian3(-length * 0.3, side * width * 0.54, z + height * 0.34), wheel: true })
+      }
+    } else if (role === 'towTruck') {
+      const boom = addBox(new Cesium.Cartesian3(length * 0.48, 0.16, 0.1), silver)
+      equipment.push({ prim: boom, offset: (z) => new Cesium.Cartesian3(-length * 0.18, 0, z + height * 0.58) })
+      const hook = addBox(new Cesium.Cartesian3(0.14, 0.14, 0.34), trim)
+      equipment.push({ prim: hook, offset: (z) => new Cesium.Cartesian3(-length * 0.42, 0, z + height * 0.46) })
+      const winch = addWheel(0.28, 0.16, trim)
+      equipment.push({ prim: winch, offset: (z) => new Cesium.Cartesian3(-length * 0.05, 0, z + height * 0.42), wheel: true })
+    }
     const parts = [
       body, cabin, roof, hood, deck, screen, rearGlass, ...sideGlass, belt, bumper, rearBumper,
       grille, plate, ...mirrors, ...lamps, ...tails, ...lightbar, ...tires, ...rims,
+      ...equipment.map((e) => e.prim),
     ]
     const put = (prim: Cesium.Primitive, pose: Cesium.Matrix4, offset: Cesium.Cartesian3) => {
       prim.modelMatrix = Cesium.Matrix4.multiply(
@@ -475,6 +538,10 @@ export function useTwinSimulation(options: SimOptions) {
           const atWheel = new Cesium.Cartesian3(sx * length, sy * width * 0.5, tireR)
           putWheel(tires[i], pose, atWheel)
           putWheel(rims[i], pose, atWheel)
+        })
+        equipment.forEach((e) => {
+          if (e.wheel) putWheel(e.prim, pose, e.offset(z))
+          else put(e.prim, pose, e.offset(z))
         })
       },
     }
@@ -545,6 +612,41 @@ export function useTwinSimulation(options: SimOptions) {
   const tinted = (base: Cesium.Color, alpha: number) =>
     Cesium.Color.clone(base, scratchColor).withAlpha(Math.max(0, Math.min(1, alpha)), scratchColor)
 
+  /* ================= 车辆空间净距求解 ================= */
+
+  /**
+   * 每个工况持有自己的标线集合与静态设施；每帧调用 solve() 得到最终车位，
+   * 而不是先摆车再做事后检查。HUD / smoke 读取 audit() 里的净距快照。
+   */
+  function createTrafficSolver(baseGuides: readonly GuideLine[], options: ClearanceOptions = {}) {
+    let audit = emptyClearanceAudit()
+    return {
+      solve(
+        requests: VehicleRequest[],
+        obstacles: StaticObstacle[] = [],
+        guides: readonly GuideLine[] = baseGuides,
+        frameOptions: ClearanceOptions = {},
+      ): ClearanceSolution {
+        const result = resolveVehicleTraffic(requests, guides, obstacles, { ...options, ...frameOptions })
+        const { placements, violations, ...snapshot } = result
+        audit = { ...snapshot, violations: [...violations] }
+        return result
+      },
+      audit: (): ClearanceAudit => ({ ...audit, violations: [...audit.violations] }),
+    }
+  }
+
+  const placementById = (solution: ClearanceSolution) =>
+    new Map(solution.placements.map((p) => [p.id, p]))
+  const laneGuides = (...extras: GuideLine[]): GuideLine[] => [...TUNNEL_LANE_GUIDES, ...extras]
+  const placeVehicle = (v: Vehicle, p: ClearanceSolution['placements'][number] | undefined, at: (along: number, lateral: number) => Frame, heading: (f: Frame) => Frame, yaw = 0) => {
+    if (!p?.visible) {
+      v.set(null)
+      return
+    }
+    v.set(heading(at(p.along, p.lateral)), yaw)
+  }
+
   /* ================= 场景：火灾疏散 ================= */
 
   function buildFire(): ScenarioFx {
@@ -553,9 +655,25 @@ export function useTwinSimulation(options: SimOptions) {
     const sign = flowSign(deck)
     const at = (meters: number, lateral = 0, height = 0) =>
       frame(deck, progressBy(deck, pe, meters * sign), lateral, height)
-    const fire = at(0, 0.82)
-    const car = addVehicle(4.6, 1.5, 1.5, '#3b2c27')
-    car.set(fire, 0.12)
+    /** 车辆朝向行车方向；火灾车在右侧车道，消防车走中间车道。 */
+    const heading = (f: Frame): Frame =>
+      sign > 0 ? f : { ...f, dir: Cesium.Cartesian3.negate(f.dir, new Cesium.Cartesian3()) }
+    const fireLane = TWIN_SAFE_LANES.right
+    const engineLane = TWIN_SAFE_LANES.center
+    const evacGuide = { id: 'fire-evacuation-line', lateral: -1.9, halfWidth: 0.12 }
+    const walkwayGuide = { id: 'fire-pedestrian-walkway', lateral: -3.7, halfWidth: 0.45 }
+    const allGuides = laneGuides(evacGuide, walkwayGuide)
+    const plainGuides = laneGuides()
+    const traffic = createTrafficSolver(allGuides, { alongMin: -130, alongMax: 130 })
+
+    const fire = at(0, fireLane)
+    const car = addVehicle(4.6, 1.45, 1.5, '#3b2c27')
+    const evacCars = ['#d5deea', '#3d7edb', '#9aa8b6'].map((color, i) => ({
+      v: addVehicle(4.5, 1.45, 1.48, color),
+      i,
+    }))
+    const fireEngine = addVehicle(7.2, 1.65, 2.55, '#c8282c', 'fireEngine')
+    const engineLights = [addSprite('beacon', 0.4, Cesium.Color.RED), addSprite('beacon', 0.4, Cesium.Color.BLUE)]
 
     const glow = addSprite('glow', 8, Cesium.Color.ORANGE)
     const flames = Array.from({ length: 56 }, () => ({
@@ -592,38 +710,54 @@ export function useTwinSimulation(options: SimOptions) {
       i,
     }))
     evacLights.forEach((l) => (l.b.position = l.f.p))
-    const fireLabel = addLabel('火点 · 小客车起火', at(0, 1.6, 4.2).p, '#d9363e')
-    const evacLabel = addLabel('安全疏散区 · 上游 80m 横通道', at(-82, -1.9, 2.6).p, '#11946a')
-    const exhaustLabel = addLabel('纵向排烟 · 烟气压向下游 →', at(28, 0, CEILING_LOWER + 0.6).p, '#c46a12')
-    let k = 0
+    const fireLabel = addLabel('推演火点 · 小客车起火', at(0, 1.6, 4.2).p, '#d9363e')
+    const evacLabel = addLabel('人员沿绿色诱导线撤离 · 车辆分道避让', at(-82, -1.9, 2.6).p, '#11946a')
+    const engineLabel = addLabel('消防车进场 · 推演控火', at(-14, engineLane, 3.1).p, '#1d6fd1')
+    const exhaustLabel = addLabel('纵向排烟 · 顺下游射流方向', at(28, 0, CEILING_LOWER + 0.6).p, '#c46a12')
+    let activeStep = 0
+    let activeK = 0
+    let overrideKey = ''
+    let evacAt = -1
+    let engineAt = -1
+    let labelText = ''
 
-    const fxOverride = (step: number) => {
+    /** 覆写对象只在模式切换时重建，负荷函数读取当前 step/k，保证步骤 3 能真正回落常规通风。 */
+    const syncVentilation = (step: number, k: number) => {
+      activeStep = step
+      activeK = k
+      const plan = fireVentilationPlan(step, k)
+      const key = `${plan.mode}|${plan.label}`
+      if (key === overrideKey) return
+      overrideKey = key
       options.fx.setOverride({
-        label: '火灾排烟联动',
-        mode: step === 1 || step === 2 ? 'exhaust' : 'normal',
+        label: plan.label,
+        mode: plan.mode,
         level: (rig) => {
-          if (step === 0) return 0.72
-          if (step === 3) return k < 0.55 ? 1 : 0.72
-          return rig.deck === 'lower' ? 1 : 0.55
+          const current = fireVentilationPlan(activeStep, activeK)
+          return rig.deck === 'lower' ? current.lower : current.upper
         },
-        vent: step === 1 || step === 2,
-        tint: step === 1 || step === 2 ? new Cesium.Color(1, 0.72, 0.45, 1) : undefined,
+        vent: plan.vent,
+        tint: plan.vent ? new Cesium.Color(1, 0.72, 0.45, 1) : undefined,
       })
     }
 
     return {
-      focus: at(1.5, 0.3, 0.65).p,
-      eventCamera: { along: -11 * sign, lateral: -2.05, height: 2.15 },
+      focus: at(-8, 0.3, 0.65).p,
+      eventCamera: { along: -45 * sign, lateral: TWIN_SAFE_LANES.shoulder, height: 3 },
       walkFrom: -72 * sign,
       walkTo: -13 * sign,
-      onStep: fxOverride,
-      update(t, _dt, step, kk) {
-        k = kk
+      walkLateral: TWIN_SAFE_LANES.shoulder,
+      onStep: (step) => syncVentilation(step, 0),
+      audit: () => traffic.audit(),
+      update(t, dt, step, kk) {
+        syncVentilation(step, kk)
+        const plan = fireVentilationPlan(step, kk)
         const intensity =
           step === 0 ? 0.55 + 0.45 * kk : step === 1 ? 1 : step === 2 ? 1 - 0.3 * kk : 0.7 * Math.pow(1 - kk, 1.6)
         const density = step === 0 ? 0.5 + 0.5 * kk : step === 1 ? 1 : step === 2 ? 0.85 : 0.75 * (1 - kk)
-        const exhaust = step === 0 ? 0 : step === 1 ? smooth(0, 0.35, kk) : 1
-        glow.position = at(0, 1.6, 1.6).p
+        // 排烟风机建立前双向扩散；排烟建立后压向下游；复盘阶段逐步恢复扩散而非瞬间反向。
+        const exhaust = step === 0 ? 0 : step === 1 ? smooth(0, 0.35, kk) : step === 2 ? 1 : 1 - smooth(0.55, 1, kk) * 0.78
+        glow.position = at(0, fireLane, 1.6).p
         glow.color = tinted(Cesium.Color.ORANGE, 0.32 * intensity * (0.85 + 0.15 * Math.sin(t * 17)))
         glow.show = intensity > 0.02
         for (const f of flames) {
@@ -662,7 +796,7 @@ export function useTwinSimulation(options: SimOptions) {
             const r = u / 0.18
             along = 0
             height = 2.3 + r * (CEILING_LOWER - 2.5)
-            lat = 1.6 + (s.lateral - 1.6) * r * 0.5
+            lat = fireLane + (s.lateral - fireLane) * r * 0.5
           } else {
             const q = (u - 0.18) / 0.82
             along = q * (26 * s.dirN * (1 - exhaust) + 72 * exhaust)
@@ -677,9 +811,68 @@ export function useTwinSimulation(options: SimOptions) {
           s.b.color = s.color.withAlpha(0.62 * fade * density, s.color)
           s.b.show = density > 0.01
         }
-        const evac = step >= 2
+
+        // 步骤 1 消防车由上游进入中间车道；步骤 2 驻车控火；步骤 3 前半段离场。
+        if (step < 1) engineAt = -1
+        else if (engineAt < 0) engineAt = t
+        const engineElapsed = engineAt >= 0 ? Math.max(0, t - engineAt) : 0
+        const engineAlong =
+          step === 0 ? -55
+            : step === 1 ? -30 + Math.min(1, kk / 0.9) * 16
+              : step === 2 ? -14
+                : -14 + Math.min(1, kk / 0.6) * 105
+        const engineVisible = step >= 1 && (step < 3 || kk < 0.6)
+        // 步骤 2 起三辆社会车沿右车道依次向上游撤离，不越过绿色疏散诱导线。
+        if (step < 2) evacAt = -1
+        else if (evacAt < 0) evacAt = t - (step === 3 ? def().steps[2].duration : 0)
+        const evacElapsed = evacAt >= 0 ? Math.max(0, t - evacAt) : 0
+        const evac = step === 2 || (step === 3 && kk < 0.35)
+        const evacAlong = evacCars.map((_, i) => -18 - i * 12 - evacElapsed * 4.8)
+        const requests: VehicleRequest[] = [
+          { id: 'fire-burnt-car', along: 0, lateral: fireLane, length: 4.6, width: 1.45, priority: 100, escape: 1 },
+          {
+            id: 'fire-engine',
+            along: engineAlong,
+            lateral: engineLane,
+            length: 7.2,
+            width: 1.65,
+            visible: engineVisible,
+            priority: 90,
+            escape: 1,
+          },
+          ...evacCars.map((c, i) => ({
+            id: `fire-evac-${i}`,
+            along: evacAlong[i],
+            lateral: fireLane,
+            length: 4.5,
+            width: 1.45,
+            visible: evacAlong[i] > -92,
+            priority: 20 - i,
+            escape: -1,
+          })),
+        ]
+        const obstacles: StaticObstacle[] = evacLights.map((l, i) => ({
+          id: `fire-evac-beacon-${i}`,
+          along: -8 - i * 7,
+          lateral: -3.7,
+          length: 0.9,
+          width: 0.9,
+        }))
+        const solution = traffic.solve(requests, obstacles, evac ? allGuides : plainGuides)
+        const placed = placementById(solution)
+        placeVehicle(car, placed.get('fire-burnt-car'), (a, l) => at(a, l), heading, 0.03)
+        placeVehicle(fireEngine, placed.get('fire-engine'), (a, l) => at(a, l), heading)
+        evacCars.forEach((c, i) => placeVehicle(c.v, placed.get(`fire-evac-${i}`), (a, l) => at(a, l), heading))
+        engineLights.forEach((l, i) => {
+          l.show = engineVisible
+          if (!engineVisible) return
+          l.position = at(engineAlong + (i ? -0.8 : 0.8), engineLane, 2.5).p
+          const on = (Math.sin(t * 8) > 0) === (i === 0)
+          l.color = tinted(i === 0 ? Cesium.Color.RED : Cesium.Color.BLUE, on ? 0.85 : 0.15)
+        })
+
         evacLine.primitive.show = evac
-        if (evac) advanceFlow(evacLine, _dt, 0.55)
+        if (evac) advanceFlow(evacLine, dt, 0.55)
         evacLights.forEach((l) => {
           l.b.show = evac
           if (evac) {
@@ -687,9 +880,20 @@ export function useTwinSimulation(options: SimOptions) {
             l.b.color = tinted(Cesium.Color.fromCssColorString('#2ee6a0'), 0.35 + 0.65 * (chase < 0.25 ? 1 : 0.15))
           }
         })
+        const nextLabel =
+          step === 0 ? '推演火点 · 小客车起火'
+            : step === 1 ? '推演火点 · 排烟建立，消防车进场'
+              : step === 2 ? '推演火点 · 消防车控火，车辆分道撤离'
+                : '推演火点 · 明火扑灭，通道清障'
+        if (nextLabel !== labelText) {
+          fireLabel.text = nextLabel
+          labelText = nextLabel
+        }
         fireLabel.show = intensity > 0.05
+        engineLabel.position = at(engineAlong, engineLane, 3.1).p
+        engineLabel.show = engineVisible
         evacLabel.show = evac
-        exhaustLabel.show = step === 1 || step === 2
+        exhaustLabel.show = plan.mode === 'exhaust'
       },
     }
   }
@@ -699,7 +903,7 @@ export function useTwinSimulation(options: SimOptions) {
   function buildFlood(): ScenarioFx {
     const deck: Deck = 'lower'
     const p = path(deck)
-    // 洞口是最低点，但断面被模型切断。积水放在进洞约五分之一处，前后都留得下车和机位。
+    // 洞口是路线最低点；往洞内退约 18m 避开被切断的断面，并按真实纵坡求水平水面。
     const origin = floodOriginMeters()
     const pLow = origin / p.length
     const zHere = frame(deck, pLow).p.z
@@ -707,33 +911,43 @@ export function useTwinSimulation(options: SimOptions) {
     const uphill: 1 | -1 = zAhead >= zHere ? 1 : -1
     const at = (meters: number, lateral = 0, height = 0) =>
       frame(deck, progressBy(deck, pLow, meters * uphill), lateral, height)
-    const poolAlong = 8
-    const poolLateral = 1.2
-    const driveLane = -0.68
-    const guideLateral = -1.72
+    const sampleAt = (meters: number): Point3 =>
+      sampleRoamingPath(p, clamp01(meters / p.length)).point
+    const rel = (meters: number) => (meters - origin) * uphill
+    const poolAlong = 7
+    // 水面、泵站与诱导设施全部落在左侧积水带；右侧两条车道保持干燥供车辆绕行。
+    const waterCenter = -2.65
+    const waterWidth = 3
+    const driveLane = TWIN_SAFE_LANES.right
+    const centerLane = TWIN_SAFE_LANES.center
+    const guideLateral = -0.95
+    const inletLateral = -1.35
     const pumpAlong = 8
-    const pumpLateral = 2.2
+    const pumpLateral = -3.55
     const sumpAlong = 12.2
-    const sumpLateral = 2.72
+    const sumpLateral = -4.15
+    const guideAt = 12
+    const floodGuide: GuideLine = { id: 'flood-yellow-guide', lateral: guideLateral, halfWidth: 0.09 }
+    const inletGuide: GuideLine = { id: 'flood-inlet-flow', lateral: inletLateral, halfWidth: 0.06 }
+    const laneOnly = laneGuides()
+    const guidingGuides = laneGuides(floodGuide, inletGuide)
+    const traffic = createTrafficSolver(guidingGuides, { alongMin: -110, alongMax: 120 })
+
     const water = createWaterMaterial(new Cesium.Color(0.1, 0.42, 0.62, 1))
     const sumpWater = createWaterMaterial(new Cesium.Color(0.08, 0.38, 0.58, 1))
-    const sheets = Array.from({ length: 1 }, () => {
-      const prim = new Cesium.Primitive({
-        geometryInstances: new Cesium.GeometryInstance({ geometry: createUnitQuadGeometry() }),
-        appearance: new Cesium.MaterialAppearance({
-          material: water,
-          translucent: true,
-          faceForward: true,
-          materialSupport: Cesium.MaterialAppearance.MaterialSupport.TEXTURED,
-        }),
-        asynchronous: false,
-        allowPicking: false,
-        show: false,
-      })
-      root!.add(prim)
-      return prim
+    const waterSheet = new Cesium.Primitive({
+      geometryInstances: new Cesium.GeometryInstance({ geometry: createUnitQuadGeometry() }),
+      appearance: new Cesium.MaterialAppearance({
+        material: water,
+        translucent: true,
+        faceForward: true,
+        materialSupport: Cesium.MaterialAppearance.MaterialSupport.TEXTURED,
+      }),
+      asynchronous: false,
+      allowPicking: false,
+      show: false,
     })
-    const waterBody = addBox(new Cesium.Cartesian3(1, 1, 1), new Cesium.Color(0.02, 0.14, 0.26, 0.62))
+    root!.add(waterSheet)
     const drops = Array.from({ length: 36 }, () => ({
       b: addSprite('drop', 0.2, Cesium.Color.fromCssColorString('#9fd8ff')),
       phase: Math.random(),
@@ -773,65 +987,49 @@ export function useTwinSimulation(options: SimOptions) {
     part(new Cesium.Cartesian3(1.7, 0.78, 0.08), steel, pumpAlong, pumpLateral, 0.06)
     part(new Cesium.Cartesian3(0.46, 0.4, 0.36), pumpBlue, pumpAlong + 0.38, pumpLateral, 0.3)
     part(new Cesium.Cartesian3(0.46, 0.4, 0.36), pumpBlue, pumpAlong - 0.38, pumpLateral, 0.3)
-    part(new Cesium.Cartesian3(0.16, 0.85, 0.14), pipeColor, pumpAlong, 1.58, 0.2)
+    part(new Cesium.Cartesian3(0.16, 0.85, 0.14), pipeColor, pumpAlong, -2.9, 0.2)
     part(new Cesium.Cartesian3(0.14, 0.14, 0.28), pipeColor, pumpAlong + 0.38, pumpLateral, 0.58)
     part(new Cesium.Cartesian3(0.14, 0.14, 0.28), pipeColor, pumpAlong - 0.38, pumpLateral, 0.58)
     part(new Cesium.Cartesian3(1.05, 0.12, 0.12), pipeColor, pumpAlong, pumpLateral, 0.72)
     part(new Cesium.Cartesian3(2.4, 0.12, 0.12), pipeColor, 10.2, pumpLateral, 0.72)
-    part(new Cesium.Cartesian3(0.12, 0.7, 0.12), pipeColor, sumpAlong, 2.45, 0.55)
+    part(new Cesium.Cartesian3(0.12, 0.7, 0.12), pipeColor, sumpAlong, -3.75, 0.55)
     part(new Cesium.Cartesian3(0.72, 0.52, 0.32), new Cesium.Color(0.18, 0.2, 0.22, 1), sumpAlong, sumpLateral, 0.18)
     part(new Cesium.Cartesian3(0.62, 0.42, 0.04), new Cesium.Color(0.1, 0.12, 0.14, 1), sumpAlong, sumpLateral, 0.36)
-    const addMotor = (meters: number) => {
-      const motor = new Cesium.Primitive({
-        geometryInstances: new Cesium.GeometryInstance({
-          geometry: new Cesium.CylinderGeometry({
-            length: 0.28,
-            topRadius: 0.14,
-            bottomRadius: 0.16,
-            vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
-          }),
-          attributes: {
-            color: Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromCssColorString('#243140')),
-          },
-        }),
-        appearance: new Cesium.PerInstanceColorAppearance({ closed: true }),
-        asynchronous: false,
-        allowPicking: false,
-      })
-      const f = at(meters, pumpLateral, 0)
-      motor.modelMatrix = Cesium.Matrix4.multiply(
-        transform,
-        Cesium.Matrix4.multiply(localPose(f), Cesium.Matrix4.fromTranslation(new Cesium.Cartesian3(0, 0, 0.62)), new Cesium.Matrix4()),
-        new Cesium.Matrix4(),
-      )
-      motor.show = true
-      root!.add(motor)
-    }
-    addMotor(pumpAlong + 0.38)
-    addMotor(pumpAlong - 0.38)
+    const pumpRotors = [pumpAlong + 0.38, pumpAlong - 0.38].map((meters) => ({
+      meters,
+      blades: [
+        addBox(new Cesium.Cartesian3(0.32, 0.06, 0.04), new Cesium.Color(0.78, 0.82, 0.86, 1)),
+        addBox(new Cesium.Cartesian3(0.06, 0.32, 0.04), new Cesium.Color(0.78, 0.82, 0.86, 1)),
+      ],
+    }))
     const pumpGlow = addSprite('glow', 0.55, Cesium.Color.fromCssColorString('#4ea6ff'))
     const pumpAnchor = at(pumpAlong, pumpLateral, 0.7)
     pumpGlow.position = pumpAnchor.p
     const sumpAnchor = at(sumpAlong, sumpLateral, 0.08)
     const pumpLine = addFlowLine(
       [
-        at(poolAlong, poolLateral + 0.7, 0.12).p,
-        at(pumpAlong, 1.58, 0.2).p,
+        at(poolAlong, -1.7, 0.12).p,
+        at(pumpAlong, -1.7, 0.2).p,
         at(pumpAlong, pumpLateral, 0.72).p,
         at(10.2, pumpLateral, 0.72).p,
-        at(sumpAlong, 2.45, 0.55).p,
+        at(sumpAlong, -3.75, 0.55).p,
         sumpAnchor.p,
       ],
       '#7ec8e3',
       5,
       1.2,
     )
+    const inletFlow = addFlowLine(
+      [at(34, inletLateral, 0.12).p, at(24, inletLateral, 0.1).p, at(poolAlong, inletLateral, 0.08).p],
+      '#58b9ff',
+      6,
+      1.6,
+    )
     const outlet = addSprite('drop', 0.28, Cesium.Color.fromCssColorString('#d7f3ff'))
-    // 诱导设施在积水上坡一侧，近景能同时看到水面和绕行车道
-    const guideAt = 12
+    // 情报板与车道标志抬高到车顶以上，立柱放在检修带，车辆从下方通过不会穿模。
     const board = billboards!.add({
       image: vmsBoardUrl('前方 K3+050 积水预警', '减速慢行 · 准备绕行上层', 'warn'),
-      position: at(guideAt, 0, 1.55).p,
+      position: at(guideAt, 0, 3.1).p,
       sizeInMeters: true,
       width: 3.6,
       height: 0.95,
@@ -839,6 +1037,7 @@ export function useTwinSimulation(options: SimOptions) {
       disableDepthTestDistance: 40,
       show: true,
     })
+    const mounts: { box: Cesium.Primitive; lateral: number }[] = []
     const mount = (offsetY: number, size: Cesium.Cartesian3, z: number) => {
       const box = addBox(size, new Cesium.Color(0.22, 0.27, 0.32, 1))
       const f = at(guideAt, offsetY, 0)
@@ -848,16 +1047,18 @@ export function useTwinSimulation(options: SimOptions) {
         new Cesium.Matrix4(),
       )
       box.show = true
+      // 顶部横梁在车顶以上，不参与地面净距；只有两侧落地立柱需要避让。
+      if (Math.abs(offsetY) > 3) mounts.push({ box, lateral: offsetY })
       return box
     }
-    mount(-2.35, new Cesium.Cartesian3(0.14, 0.14, 2.15), 1.05)
-    mount(2.35, new Cesium.Cartesian3(0.14, 0.14, 2.15), 1.05)
-    mount(0, new Cesium.Cartesian3(0.12, 4.9, 0.12), 2.05)
-    const signs = [-2.15, 2.15].map((lat) => ({
+    mount(-4.35, new Cesium.Cartesian3(0.14, 0.14, 3.1), 1.55)
+    mount(4.35, new Cesium.Cartesian3(0.14, 0.14, 3.1), 1.55)
+    mount(0, new Cesium.Cartesian3(0.12, 8.8, 0.12), 3.08)
+    const signs = [-3.3, TWIN_SAFE_LANES.right].map((lat) => ({
       closed: addSprite('laneClosed', 0.82, Cesium.Color.WHITE),
       open: addSprite('laneOpen', 0.82, Cesium.Color.WHITE),
       lat,
-      f: at(guideAt, lat, 1.15),
+      f: at(guideAt, lat, 2.55),
     }))
     signs.forEach((s) => {
       s.closed.position = s.f.p
@@ -871,14 +1072,21 @@ export function useTwinSimulation(options: SimOptions) {
       18,
       2.2,
     )
-    const guideDashes = Array.from({ length: 16 }, (_, i) =>
-      part(new Cesium.Cartesian3(1.05, 0.14, 0.035), new Cesium.Color(1, 0.78, 0.1, 1), 24 - i * 2.1, guideLateral, 0.08),
-    )
-    guideDashes.forEach((d) => (d.show = false))
+    const guideDashes = Array.from({ length: 16 }, (_, i) => ({
+      box: part(new Cesium.Cartesian3(1.05, 0.14, 0.035), new Cesium.Color(1, 0.78, 0.1, 1), 24 - i * 2.1, guideLateral, 0.08),
+      along: 24 - i * 2.1,
+    }))
+    const guideCones = Array.from({ length: 8 }, (_, i) => ({
+      cone: addCone(at(24 - i * 4.2, -1.15)),
+      along: 24 - i * 4.2,
+    }))
+    guideDashes.forEach((d) => (d.box.show = false))
+    guideCones.forEach((c) => (c.cone.show = false))
     guideLine.primitive.show = false
-    const detourCars = ['#d5deea', '#3d7edb'].map((c, i) => ({
-      v: addVehicle(4.5, 1.5, 1.48, c),
-      along: 18 + i * 8,
+    const detourCars = ['#d5deea', '#3d7edb', '#9aa8b6'].map((c, i) => ({
+      v: addVehicle(4.5, 1.45, 1.48, c),
+      along: 26 - i * 10,
+      i,
     }))
     let guideAtTime = -1
     const heading = (f: Frame): Frame =>
@@ -894,95 +1102,129 @@ export function useTwinSimulation(options: SimOptions) {
       lateral: rand(-1.2, 1.2),
       along: Math.random(),
     }))
-    const roadStain = addBox(new Cesium.Cartesian3(1, 1, 1), new Cesium.Color(0.14, 0.22, 0.28, 0.42))
-    let visLevel = 0.1
-    const labelAnchor = at(poolAlong, poolLateral, 1.7)
-    const levelLabel = addLabel('积水点 W2', labelAnchor.p, '#d9363e')
-    levelLabel.position = labelAnchor.p
-    const pumpLabel = addLabel('排涝泵 P1/P2 · 抽排中', new Cesium.Cartesian3(pumpAnchor.p.x, pumpAnchor.p.y, pumpAnchor.p.z + 0.85), '#1d6fd1')
-    const sumpLabel = addLabel('侧墙集水井 · 受纳点', new Cesium.Cartesian3(sumpAnchor.p.x, sumpAnchor.p.y, sumpAnchor.p.z + 1.15), '#1d6fd1')
+    let visLevel = 0.05
+    const pit = at(poolAlong, waterCenter)
+    const levelLabel = addLabel('积水点 W2 · 推演液位', at(poolAlong, 0, 1.7).p, '#d9363e')
+    const pumpLabel = addLabel('排涝泵 P1/P2 · 推演抽排', new Cesium.Cartesian3(pumpAnchor.p.x, pumpAnchor.p.y, pumpAnchor.p.z + 0.85), '#1d6fd1')
+    const sumpLabel = addLabel('侧墙集水井 · 推演受纳点', new Cesium.Cartesian3(sumpAnchor.p.x, sumpAnchor.p.y, sumpAnchor.p.z + 1.15), '#1d6fd1')
+    const detourLabel = addLabel('交通诱导 · 推演绕行', at(guideAt, driveLane, 1.7).p, '#c46a12')
     let shownBand = ''
-    const detourLabel = addLabel('交通诱导 · 请沿黄线绕行', at(guideAt, driveLane, 1.7).p, '#c46a12')
     let lastText = ''
+    let lastPumpText = ''
+    let lastDetourText = ''
     let boardMode = ''
 
     return {
-      focus: at(poolAlong - 1, 0.05, 0.18).p,
-      eventCamera: { along: (poolAlong + 10) * uphill, lateral: -0.15, height: 2.5 },
+      focus: at(poolAlong - 1, waterCenter * 0.25, 0.18).p,
+      eventCamera: { along: (poolAlong + 35) * uphill, lateral: TWIN_SAFE_LANES.shoulder, height: 3 },
       walkFrom: 64 * uphill,
       walkTo: 12 * uphill,
+      walkLateral: TWIN_SAFE_LANES.shoulder,
+      audit: () => traffic.audit(),
       update(t, dt, step, k) {
         const tel = def().telemetry(step, k)
         const levelCm = Number.parseFloat(tel[0].value) || 0
+        const pumpFlow = Number.parseFloat(tel[1].value) || 0
         const rain = Number.parseFloat(tel[2].value) || 0
-        const targetH = Math.max(0.08, levelCm / 100)
+        const targetH = Math.max(0.025, levelCm / 100)
         visLevel += (targetH - visLevel) * Math.min(1, dt * 0.42)
         const h = visLevel
-        const diameter = 2.4 + Math.min(0.8, h * 1.6)
-        const pit = at(poolAlong, poolLateral)
-        const surfaceZ = pit.p.z + h + 0.08
-        const placeFlat = (prim: Cesium.Primitive, poseAt: Cesium.Cartesian3, lift: number, scale: Cesium.Cartesian3) => {
-          prim.modelMatrix = Cesium.Matrix4.multiply(
-            transform,
-            Cesium.Matrix4.multiply(
-              localPose({ ...pit, p: new Cesium.Cartesian3(poseAt.x, poseAt.y, lift) }, 0, 0),
-              Cesium.Matrix4.fromScale(scale),
-              new Cesium.Matrix4(),
-            ),
+        // 水平水面与真实路面纵坡求交：水位越高，向上游延伸越长，而不是固定圆盘悬空。
+        const extent = solveFloodExtent(sampleAt, p.length, origin, h, {
+          startMargin: 9,
+          maxLookahead: 70,
+          direction: uphill,
+          sampleStep: 0.75,
+        })
+        const startRel = rel(extent.startMeters)
+        const endRel = rel(extent.endMeters)
+        const centerRel = rel(extent.centerMeters)
+        const wetSpan = Math.abs(endRel - startRel)
+        const waterStart = Math.min(startRel, endRel)
+        const waterEnd = Math.max(startRel, endRel)
+        const waterTopZ = extent.surfaceZ + 0.008
+        const centerRoadFrame = frame(deck, clamp01(extent.centerMeters / p.length))
+        const waterCenterPoint = new Cesium.Cartesian3(centerRoadFrame.p.x, centerRoadFrame.p.y, waterTopZ)
+        Cesium.Cartesian3.add(
+          waterCenterPoint,
+          Cesium.Cartesian3.multiplyByScalar(centerRoadFrame.side, waterCenter, new Cesium.Cartesian3()),
+          waterCenterPoint,
+        )
+        const waterPose = localPose({ ...centerRoadFrame, p: waterCenterPoint }, 0, 0)
+        waterSheet.modelMatrix = Cesium.Matrix4.multiply(
+          transform,
+          Cesium.Matrix4.multiply(
+            waterPose,
+            Cesium.Matrix4.fromScale(new Cesium.Cartesian3(extent.horizontalLength, waterWidth, 1)),
             new Cesium.Matrix4(),
-          )
-        }
-        const showWater = levelCm > 0.8
-        placeFlat(sheets[0], pit.p, surfaceZ, new Cesium.Cartesian3(diameter, diameter, 1))
-        sheets[0].show = showWater && h > 0.06
-        waterBody.show = false
-        roadStain.show = false
-        const center = pit
+          ),
+          new Cesium.Matrix4(),
+        )
+        const showWater = levelCm > 0.8 && h > 0.015 && extent.horizontalLength > 0.6
+        waterSheet.show = showWater
         ;(water.uniforms as { time: number }).time += dt
         ;(sumpWater.uniforms as { time: number }).time += dt
         for (const f of foam) {
           const u = fract(f.phase + t * 0.35)
           const ang = f.phase * Math.PI * 2
-          const ring = diameter * (0.15 + 0.28 * u)
-          const edge = at(poolAlong + Math.cos(ang) * ring * 0.5, poolLateral + Math.sin(ang) * ring * 0.5, 0)
-          f.b.position = new Cesium.Cartesian3(edge.p.x, edge.p.y, surfaceZ + 0.04)
+          const reach = 0.25 + 0.55 * u
+          const edge = at(
+            centerRel + Math.cos(ang) * wetSpan * 0.42 * reach,
+            waterCenter + Math.sin(ang) * waterWidth * 0.35 * reach,
+            0,
+          )
+          f.b.position = new Cesium.Cartesian3(edge.p.x, edge.p.y, waterTopZ + 0.025)
           f.b.width = f.b.height = 0.28 + u * 0.45
-          f.b.color = tinted(Cesium.Color.fromCssColorString('#e9f7ff'), (1 - u) * 0.75 * (h > 0.04 ? 1 : 0))
-          f.b.show = h > 0.04
+          f.b.color = tinted(Cesium.Color.fromCssColorString('#e9f7ff'), (1 - u) * 0.75 * (showWater ? 1 : 0))
+          f.b.show = showWater
         }
         for (const r of ripples) {
           const pulse = fract(r.phase + t * 0.4)
-          const spot = at(poolAlong + (r.along - 0.5) * diameter * 0.35, poolLateral + r.lateral * 0.35, 0)
-          r.b.position = new Cesium.Cartesian3(spot.p.x, spot.p.y, surfaceZ + 0.03)
+          const spot = at(centerRel + (r.along - 0.5) * wetSpan * 0.65, waterCenter + r.lateral * waterWidth * 0.28, 0)
+          r.b.position = new Cesium.Cartesian3(spot.p.x, spot.p.y, waterTopZ + 0.02)
           r.b.width = r.b.height = 0.35 + pulse * 0.55
           r.b.color = tinted(Cesium.Color.fromCssColorString('#b8dde8'), (1 - pulse) * 0.22)
-          r.b.show = h > 0.1
+          r.b.show = showWater
         }
         const rainK = clamp01(rain / 42)
         for (const d of drops) {
           const u = fract(d.phase + t * 0.06)
-          const along = poolAlong + (u - 0.5) * diameter
-          const f = at(along, poolLateral + d.lateral * 0.45, 2.2 * (1 - u))
+          const along = startRel + u * (endRel - startRel)
+          const f = at(along, waterCenter + d.lateral * waterWidth * 0.32, 2.2 * (1 - u))
           d.b.position = f.p
           d.b.width = 0.1
           d.b.height = 0.38
           d.b.color = tinted(Cesium.Color.fromCssColorString('#9fd8ff'), (u < 0.12 ? u * 8 : 1) * 0.55 * rainK)
           d.b.show = rainK > 0.12 && showWater
         }
-        alarm.position = new Cesium.Cartesian3(center.p.x, center.p.y, surfaceZ + 0.15)
+        alarm.position = new Cesium.Cartesian3(waterCenterPoint.x, waterCenterPoint.y, waterTopZ + 0.15)
         const pulse = fract(t * 0.7)
         alarm.width = alarm.height = 0.7
         alarm.color = tinted(Cesium.Color.RED, 0.35 + (1 - pulse) * 0.4)
-        alarm.show = step <= 1
-        const pumping = step >= 1 && step < 3
+        alarm.show = step <= 1 && showWater
+        // 水位回落阶段抽排仍持续，设备表、泵站叶轮、流线和出口强度共用同一个流量读数。
+        const pumpStrength = clamp01(pumpFlow / 420)
+        const pumping = step >= 1 && pumpStrength > 0.02
         pumpGlow.show = pumping
-        pumpGlow.color = tinted(Cesium.Color.fromCssColorString('#4ea6ff'), pumping ? 0.55 : 0)
+        pumpGlow.color = tinted(Cesium.Color.fromCssColorString('#4ea6ff'), 0.25 + 0.45 * pumpStrength)
         pumpLine.primitive.show = pumping
-        if (pumping) advanceFlow(pumpLine, dt, 1.6)
+        if (pumping) advanceFlow(pumpLine, dt, 0.5 + 1.4 * pumpStrength)
+        const rotorAngle = pumping ? t * (2 + 6 * pumpStrength) : 0
+        pumpRotors.forEach((rotor, ri) => {
+          const f = at(rotor.meters, pumpLateral, 0)
+          rotor.blades.forEach((blade, bi) => {
+            blade.modelMatrix = Cesium.Matrix4.multiply(
+              transform,
+              localPose(f, rotorAngle + ri * 0.7 + bi * Math.PI / 4, 0.68),
+              new Cesium.Matrix4(),
+            )
+            blade.show = pumping
+          })
+        })
         const jet = fract(t * 1.4)
         outlet.position = new Cesium.Cartesian3(sumpAnchor.p.x, sumpAnchor.p.y, sumpAnchor.p.z + 0.42 + jet * 0.2)
         outlet.width = outlet.height = 0.16 + jet * 0.14
-        outlet.color = tinted(Cesium.Color.fromCssColorString('#d7f3ff'), pumping ? (1 - jet) * 0.75 : 0)
+        outlet.color = tinted(Cesium.Color.fromCssColorString('#d7f3ff'), pumping ? (1 - jet) * 0.75 * pumpStrength : 0)
         outlet.show = pumping
         sumpSheet.modelMatrix = Cesium.Matrix4.multiply(
           transform,
@@ -1006,33 +1248,68 @@ export function useTwinSimulation(options: SimOptions) {
           )
         }
         board.show = true
+        inletFlow.primitive.show = step <= 2 && rainK > 0.15 && showWater
+        if (inletFlow.primitive.show) advanceFlow(inletFlow, dt, 0.8 + rainK)
         guideLine.primitive.show = guiding
         if (guiding) advanceFlow(guideLine, dt, 1.1)
-        guideDashes.forEach((d) => (d.show = guiding))
+        guideDashes.forEach((d) => (d.box.show = guiding))
+        guideCones.forEach((c) => (c.cone.show = guiding))
         signs.forEach((s) => {
-          const shut = guiding && s.lat > 0
+          const shut = guiding && s.lat < 0
           s.closed.show = shut
           s.open.show = !shut
         })
-        if (guiding) {
+
+        // 车辆先在干燥上游停车等待；诱导阶段沿黄线右侧车道绕过水面，恢复阶段双车道低速放行。
+        if (guiding || passing) {
           if (guideAtTime < 0) {
             guideAtTime = t
-            detourCars.forEach((c, i) => (c.along = 16 - i * 9))
+            detourCars.forEach((c, i) => (c.along = 26 - i * 10))
           }
-          const blend = Math.min(1, (t - guideAtTime) / 2.4)
           detourCars.forEach((c) => {
-            c.along -= dt * 6.2
-            if (c.along < -16) c.along = 22
-            const lateral = poolLateral + (driveLane - poolLateral) * blend
-            c.v.set(heading(at(c.along, lateral)))
+            c.along -= dt * (passing ? 7.8 : 6.2)
+            if (c.along < -20) c.along += 46
           })
         } else {
           guideAtTime = -1
-          detourCars.forEach((c, i) => c.v.set(heading(at(16 + i * 7, poolLateral))))
+          detourCars.forEach((c, i) => (c.along = waterEnd + 8 + i * 9))
         }
+        const requests: VehicleRequest[] = detourCars.map((c, i) => ({
+          id: `flood-detour-${i}`,
+          along: c.along,
+          lateral: passing && i % 2 === 1 ? centerLane : driveLane,
+          length: 4.5,
+          width: 1.45,
+          priority: 30 - i,
+          escape: -1,
+        }))
+        const obstacles: StaticObstacle[] = [
+          { id: 'flood-water-sheet', along: centerRel, lateral: waterCenter, length: wetSpan, width: waterWidth },
+          { id: 'flood-pump-station', along: pumpAlong, lateral: pumpLateral, length: 2.2, width: 1.4 },
+          { id: 'flood-side-sump', along: sumpAlong, lateral: sumpLateral, length: 1.1, width: 0.9 },
+          ...mounts.map((m, i) => ({
+            id: `flood-vms-mount-${i}`,
+            along: guideAt,
+            lateral: m.lateral,
+            length: 0.16,
+            width: 0.16,
+          })),
+        ]
+        if (guiding) {
+          guideDashes.forEach((d, i) =>
+            obstacles.push({ id: `flood-guide-dash-${i}`, along: d.along, lateral: guideLateral, length: 1.05, width: 0.14 }),
+          )
+          guideCones.forEach((c, i) =>
+            obstacles.push({ id: `flood-guide-cone-${i}`, along: c.along, lateral: -1.15, length: 0.34, width: 0.34 }),
+          )
+        }
+        const solution = traffic.solve(requests, obstacles, guiding ? guidingGuides : laneOnly)
+        const placed = placementById(solution)
+        detourCars.forEach((c, i) => placeVehicle(c.v, placed.get(`flood-detour-${i}`), (a, l) => at(a, l), heading))
+
         const cm = Math.round(levelCm)
         const band = cm >= 25 ? '#d9363e' : cm >= 15 ? '#c46a12' : '#11946a'
-        const text = `积水点 W2 · ${cm}cm`
+        const text = `积水点 W2 · 推演 ${cm}cm`
         if (text !== lastText) {
           levelLabel.text = text
           lastText = text
@@ -1041,10 +1318,21 @@ export function useTwinSimulation(options: SimOptions) {
           levelLabel.backgroundColor = Cesium.Color.fromCssColorString(band)
           shownBand = band
         }
+        levelLabel.position = new Cesium.Cartesian3(waterCenterPoint.x, waterCenterPoint.y, waterTopZ + 1.2)
         levelLabel.show = true
+        const pumpText = `排涝泵 P1/P2 · 推演 ${Math.round(pumpFlow)}m³/h`
+        if (pumpText !== lastPumpText) {
+          pumpLabel.text = pumpText
+          lastPumpText = pumpText
+        }
+        const detourText = guiding ? '黄色诱导线 · 车辆绕行不压线' : passing ? '水位回落 · 双车道恢复' : '积水预警 · 上游停车等待'
+        if (detourText !== lastDetourText) {
+          detourLabel.text = detourText
+          lastDetourText = detourText
+        }
         pumpLabel.show = pumping
         sumpLabel.show = pumping
-        detourLabel.show = guiding
+        detourLabel.show = true
       },
     }
   }
@@ -1055,45 +1343,55 @@ export function useTwinSimulation(options: SimOptions) {
     const deck: Deck = 'upper'
     const pe = def().eventProgress
     const sign = flowSign(deck)
-    // 标线在路线 ±1.8 附近，车身中心收到车道内侧，避免压实线
-    const closedLane = -0.82
-    const openLane = 0.82
-    const rescueLane = 0.82
+    // 竣工标线在路线 ±1.8 / ±4.5；事故车、救援与社会车辆分别占用三条安全走廊。
+    const closedLane = TWIN_SAFE_LANES.left
+    const openLane = TWIN_SAFE_LANES.right
+    const rescueLane = TWIN_SAFE_LANES.center
     const at = (meters: number, lateral = 0, height = 0) =>
       frame(deck, progressBy(deck, pe, meters * sign), lateral, height)
     /** 车辆朝向行车方向 */
     const heading = (f: Frame): Frame =>
       sign > 0 ? f : { ...f, dir: Cesium.Cartesian3.negate(f.dir, new Cesium.Cartesian3()) }
-
     const len = path(deck).length
-    const hitA = addVehicle(4.6, 1.5, 1.45, '#e9edf3')
-    const hitB = addVehicle(4.8, 1.55, 1.6, '#2b4a8a')
+    const coneGuide: GuideLine = { id: 'accident-cone-taper', lateral: -1.8, halfWidth: 0.2 }
+    const plainGuides = laneGuides()
+    const closedGuides = laneGuides(coneGuide)
+    const traffic = createTrafficSolver(plainGuides, {
+      alongMin: -len / 2 - 20,
+      alongMax: len / 2 + 20,
+    })
+
+    const hitA = addVehicle(4.6, 1.45, 1.45, '#e9edf3')
+    const hitB = addVehicle(4.8, 1.5, 1.6, '#2b4a8a')
     const palette = ['#7d8796', '#b8332f', '#d9dde3', '#1f2933', '#3d6b4f', '#c9a227']
-    const queue = palette.map((c, i) => ({ v: addVehicle(4.5, 1.5, 1.5, c), gap: 22 + i * 11 }))
+    const queue = palette.map((c, i) => ({ v: addVehicle(4.5, 1.45, 1.5, c), gap: 22 + i * 11 }))
     const flow = ['#5c6f8a', '#e0e4ea', '#8a2f2f', '#2f3d4d'].map((c, i) => ({
-      v: addVehicle(4.5, 1.5, 1.5, c),
+      v: addVehicle(4.5, 1.45, 1.5, c),
       progress: (i + 0.35) / 4,
     }))
-    const rescue = addVehicle(7.2, 1.65, 2.55, '#c8282c')
+    const rescue = addVehicle(7.2, 1.65, 2.55, '#c8282c', 'fireEngine')
+    const towTruck = addVehicle(7.4, 1.7, 2.5, '#e8b53a', 'towTruck')
     const debris = [0, 1, 2, 3, 4].map((i) => ({
       box: addBox(new Cesium.Cartesian3(0.55, 0.16, 0.06), new Cesium.Color(0.1, 0.1, 0.11, 1)),
       i,
     }))
     const hazards = [addSprite('beacon', 0.55, Cesium.Color.ORANGE), addSprite('beacon', 0.55, Cesium.Color.ORANGE)]
     const rescueLights = [addSprite('beacon', 0.4, Cesium.Color.RED), addSprite('beacon', 0.4, Cesium.Color.BLUE)]
-    const cones = [
-      { along: -40, lateral: -1.95 },
-      { along: -34, lateral: -1.95 },
-      { along: -28, lateral: -1.95 },
-      { along: -22, lateral: -1.95 },
+    const towLights = [addSprite('beacon', 0.36, Cesium.Color.ORANGE), addSprite('beacon', 0.36, Cesium.Color.ORANGE)]
+    const coneSpots = [
+      { along: -40, lateral: -1.9 },
+      { along: -34, lateral: -1.9 },
+      { along: -28, lateral: -1.9 },
+      { along: -22, lateral: -1.9 },
       { along: -16.5, lateral: -1.85 },
-      { along: -15.2, lateral: -1.45 },
-      { along: -13.8, lateral: -1.1 },
-      { along: -12.6, lateral: -0.72 },
-    ].map((spot) => addCone(at(spot.along, spot.lateral)))
+      { along: -15.2, lateral: -1.75 },
+      { along: -13.8, lateral: -1.65 },
+      { along: -12.6, lateral: -1.55 },
+    ]
+    const cones = coneSpots.map((spot) => addCone(at(spot.along, spot.lateral)))
     const signAt = -6
-    const signs = [closedLane, openLane].map((lat) => {
-      const f = at(signAt, lat, 2.85)
+    const signs = [closedLane, rescueLane, openLane].map((lat) => {
+      const f = at(signAt, lat, 3.05)
       const closed = addSprite('laneClosed', 0.78, Cesium.Color.WHITE)
       const open = addSprite('laneOpen', 0.78, Cesium.Color.WHITE)
       closed.position = open.position = f.p
@@ -1101,135 +1399,202 @@ export function useTwinSimulation(options: SimOptions) {
       open.disableDepthTestDistance = 40
       return { lat, closed, open }
     })
-    const crashLabel = addLabel('事故点 · 两车追尾 · 占用 1 车道', at(0, closedLane, 2.6).p, '#d9363e')
-    const controlLabel = addLabel('车道管制 · 事故车道封闭', at(signAt, 0, 3.55).p, '#c46a12')
+    const crashLabel = addLabel('推演事故点 · 两车追尾 · 占用 1 车道', at(0, closedLane, 2.9).p, '#d9363e')
+    const controlLabel = addLabel('推演车道管制 · 左道封闭 · 右道低速通行', at(signAt, 0, 3.55).p, '#c46a12')
+    const stageLabel = addLabel('接警与视频复核 · 后方车辆排队', at(signAt, 0, 4.15).p, '#4ee6ff')
     let disposeAt = -1
     let clearAt = -1
+    let lastStage = ''
 
     return {
-      focus: at(-3.2, closedLane * 0.35, 0.55).p,
-      eventCamera: { along: -18 * sign, lateral: 2.35, height: 3.15 },
+      focus: at(-8, closedLane * 0.35, 0.55).p,
+      eventCamera: { along: 24 * sign, lateral: TWIN_SAFE_LANES.shoulder, height: 3 },
       walkFrom: -96 * sign,
       walkTo: -30 * sign,
-      onStep: () => options.fx.setOverride(null),
+      walkLateral: TWIN_SAFE_LANES.shoulder,
+      onStep: () => applyBaselineVentilation(),
+      audit: () => traffic.audit(),
       update(t, dt, step, k) {
         const tel = def().telemetry(step, k)
         const queueM = Number.parseFloat(tel[0].value) || 0
         const speedKmh = Number.parseFloat(tel[1].value) || 40
         const cordon = step === 1 || (step === 2 && k < 0.52)
-        const sceneHold = step === 2 && k < 0.52
+        const onSite = step === 2 && k >= 0.52 && k < 0.72
         const clearing = (step === 2 && k >= 0.52) || step === 3
+        const towPhase = (step === 2 && k >= 0.72) || step === 3
+        const conesVisible = cordon || (step === 2 && k < 0.92) || (step === 3 && k < 0.2)
+        const debrisVisible = cordon || onSite
         if (step === 2) {
           if (disposeAt < 0) disposeAt = t
-          if (clearing && clearAt < 0) clearAt = t
+          if (towPhase && clearAt < 0) clearAt = t
         } else if (step === 3) {
-          if (clearAt < 0) clearAt = t
+          // 直接切到步骤 4 时，处置已进行数秒，避免从头再放一遍救援车。
+          if (disposeAt < 0) disposeAt = t - 4
+          if (clearAt < 0) clearAt = t - 4
         } else {
           disposeAt = -1
           clearAt = -1
         }
-        const tow = clearing && clearAt >= 0 ? Math.min(42, (t - clearAt - 0.5) * 8) : 0
+        const tow = towPhase && clearAt >= 0 ? Math.min(42, Math.max(0, (t - clearAt - 0.3) * 8)) : 0
         const aAlong = tow
         const bAlong = -9.2 + tow
+        const towAlong = 14 + tow
         const stillInside = (along: number) => {
           const prog = pe + (along * sign) / len
           return prog > 0.004 && prog < 0.996
         }
-        const wreckOnScene = !clearing || tow < 38
-        hitA.set(wreckOnScene && stillInside(aAlong) ? heading(at(aAlong, closedLane)) : null, 0.05)
-        hitB.set(wreckOnScene && stillInside(bAlong) ? heading(at(bAlong, closedLane)) : null, -0.04)
+        const wreckOnScene = !towPhase || tow < 38
+        const towTruckVisible = towPhase && clearAt >= 0 && tow < 38
         debris.forEach((d) => {
-          const along = -3.1 - d.i * 0.85 + (clearing ? tow * 0.35 : 0)
+          const along = -3.6 - d.i * 0.55
           const f = at(along, closedLane + (d.i % 2 ? 0.35 : -0.35))
           d.box.modelMatrix = Cesium.Matrix4.multiply(
             transform,
             localPose(f, d.i * 0.35, 0.05),
             new Cesium.Matrix4(),
           )
-          d.box.show = cordon || sceneHold
+          d.box.show = debrisVisible
         })
-        queue.forEach((q, i) => {
-          const visible =
-            (step < 2 && queueM >= i * 55 + 8) || step === 2 || (step === 3 && clearing)
+        const queueAlong = queue.map((q, i) => {
           let along = -q.gap
-          if (clearing && clearAt >= 0)
-            along += Math.max(0, (t - clearAt - 5) * 7.5 - i * 2.6)
-          const prog = pe + (along * sign) / len
-          q.v.set(visible && prog > 0.004 && prog < 0.996 ? heading(at(along, closedLane)) : null)
+          if (clearing && clearAt >= 0) along += Math.max(0, (t - clearAt - 5) * 7.5 - i * 2.6)
+          return along
         })
-        const cruise = Math.max(6, (speedKmh / 3.6) * 0.65)
+        const cruise = Math.max(2.5, (speedKmh / 3.6) * 0.55)
+        const flowAlong = flow.map((c) => {
+          c.progress += (dt * cruise * sign) / len
+          if (c.progress >= 1) c.progress -= 1
+          if (c.progress < 0) c.progress += 1
+          let along = ((c.progress - pe) * len) / sign
+          if (along > len / 2) along -= len
+          if (along < -len / 2) along += len
+          return along
+        })
+        // 救援车经中间车道进场，先在事故点上游驻车，随后与清障车错道离场。
         const rescueApproach = step === 2 && k < 0.52
-        const rescueHold = sceneHold
-        const rescueDepart = clearing
+        const rescueHold = onSite
+        const rescueDepart = towPhase
         const rescueStop = -18
-        const rescueTravel = rescueApproach ? Math.min(1, k / 0.52) : rescueHold ? 1 : -1
-        const rescueAlongHold = rescueTravel >= 0 ? -95 + rescueTravel * (95 + rescueStop) : Number.NaN
-        const rescueProg = Number.isFinite(rescueAlongHold) ? pe + (rescueAlongHold * sign) / len : Number.NaN
-        flow.forEach((c) => {
-          const holdForRescue = (rescueApproach || rescueHold) && Number.isFinite(rescueProg)
-          if (!(clearing && clearAt >= 0 && t - clearAt > 3.2)) {
-            c.progress += (dt * cruise * sign) / len
-            if (c.progress >= 1) c.progress -= 1
-            if (c.progress < 0) c.progress += 1
-          }
-          if (holdForRescue) {
-            let delta = (c.progress - rescueProg!) * len
-            if (delta > len / 2) delta -= len
-            if (delta < -len / 2) delta += len
-            if (delta * sign <= 0 && Math.abs(delta) < 10) {
-              let held = rescueProg! - (10 * sign) / len
-              if (held < 0) held += 1
-              if (held >= 1) held -= 1
-              c.progress = held
-            }
-          }
-          c.v.set(heading(frame(deck, c.progress, openLane, 0)))
-        })
+        let rescueAlong = Number.NaN
+        if (rescueApproach) rescueAlong = -55 + (k / 0.52) * (55 + rescueStop)
+        else if (rescueHold) rescueAlong = rescueStop
+        else if (rescueDepart && clearAt >= 0) {
+          const depart = Math.min(1, Math.max(0, (t - clearAt - 0.4) / 6))
+          if (depart < 1) rescueAlong = rescueStop + depart * 90
+        }
+        const rescueVisible = Number.isFinite(rescueAlong) && stillInside(rescueAlong)
+
+        const requests: VehicleRequest[] = [
+          {
+            id: 'accident-hit-a', along: aAlong, lateral: closedLane, length: 4.6, width: 1.45,
+            visible: wreckOnScene && stillInside(aAlong), priority: 100, escape: 1,
+          },
+          {
+            id: 'accident-hit-b', along: bAlong, lateral: closedLane, length: 4.8, width: 1.5,
+            visible: wreckOnScene && stillInside(bAlong), priority: 99, escape: 1,
+          },
+          {
+            id: 'accident-tow-truck', along: towAlong, lateral: closedLane, length: 7.4, width: 1.7,
+            visible: towTruckVisible && stillInside(towAlong), priority: 95, escape: 1,
+          },
+          {
+            id: 'accident-rescue', along: rescueAlong, lateral: rescueLane, length: 7.2, width: 1.65,
+            visible: rescueVisible, priority: 90, escape: 1,
+          },
+          ...queue.map((q, i) => ({
+            id: `accident-queue-${i}`,
+            along: queueAlong[i],
+            lateral: closedLane,
+            length: 4.5,
+            width: 1.45,
+            visible: ((step < 2 && queueM >= i * 55 + 8) || step === 2 || step === 3) && stillInside(queueAlong[i]),
+            priority: 60 - i,
+            escape: 1,
+          })),
+          ...flow.map((c, i) => ({
+            id: `accident-passing-${i}`,
+            along: flowAlong[i],
+            lateral: openLane,
+            length: 4.5,
+            width: 1.45,
+            visible: stillInside(flowAlong[i]),
+            priority: 30 - i,
+            escape: 1,
+          })),
+        ]
+        const obstacles: StaticObstacle[] = []
+        if (conesVisible)
+          coneSpots.forEach((spot, i) =>
+            obstacles.push({ id: `accident-cone-${i}`, along: spot.along, lateral: spot.lateral, length: 0.34, width: 0.34 }),
+          )
+        if (debrisVisible)
+          debris.forEach((d, i) =>
+            obstacles.push({
+              id: `accident-debris-${i}`,
+              along: -3.6 - i * 0.55,
+              lateral: closedLane + (i % 2 ? 0.35 : -0.35),
+              length: 0.55,
+              width: 0.16,
+            }),
+          )
+        if (conesVisible)
+          hazards.forEach((_, i) =>
+            obstacles.push({
+              id: `accident-hazard-${i}`,
+              along: i === 0 ? 4.2 : -13.2,
+              lateral: i === 0 ? closedLane : -2.05,
+              length: 0.55,
+              width: 0.55,
+            }),
+          )
+        const solution = traffic.solve(requests, obstacles, conesVisible ? closedGuides : plainGuides)
+        const placed = placementById(solution)
+        placeVehicle(hitA, placed.get('accident-hit-a'), (a, l) => at(a, l), heading, 0.05)
+        placeVehicle(hitB, placed.get('accident-hit-b'), (a, l) => at(a, l), heading, -0.04)
+        placeVehicle(towTruck, placed.get('accident-tow-truck'), (a, l) => at(a, l), heading)
+        placeVehicle(rescue, placed.get('accident-rescue'), (a, l) => at(a, l), heading)
+        queue.forEach((q, i) => placeVehicle(q.v, placed.get(`accident-queue-${i}`), (a, l) => at(a, l), heading))
+        flow.forEach((c, i) => placeVehicle(c.v, placed.get(`accident-passing-${i}`), (a, l) => at(a, l), heading))
+
         const blink = 0.35 + 0.4 * (0.5 + 0.5 * Math.sin(t * 6))
         hazards.forEach((h, i) => {
           h.position = at(i === 0 ? 4.2 : -13.2, i === 0 ? closedLane : -2.05, 0.55).p
-          h.color = tinted(Cesium.Color.ORANGE, (cordon || sceneHold) ? blink : 0)
-          h.show = cordon || sceneHold
+          h.color = tinted(Cesium.Color.ORANGE, conesVisible ? blink : 0)
+          h.show = conesVisible
         })
-        cones.forEach((c) => {
-          c.show = cordon
-        })
+        cones.forEach((c) => (c.show = conesVisible))
         signs.forEach((s) => {
-          const closed = s.lat === closedLane && (cordon || sceneHold)
+          const closed = s.lat === closedLane && conesVisible
           s.closed.show = closed
           s.open.show = !closed
         })
-        if (rescueApproach || rescueHold) {
-          const travel = rescueApproach ? Math.min(1, k / 0.52) : 1
-          const along = -95 + travel * (95 + rescueStop)
-          rescue.set(heading(at(along, rescueLane)))
-          rescueLights.forEach((l, i) => {
-            l.position = at(along + (i ? -0.8 : 0.8), rescueLane, 2.5).p
-            const on = (Math.sin(t * 8) > 0) === (i === 0)
-            l.color = tinted(i === 0 ? Cesium.Color.RED : Cesium.Color.BLUE, on ? 0.85 : 0.15)
-            l.show = true
-          })
-        } else if (rescueDepart && clearAt >= 0) {
-          const depart = Math.min(1, Math.max(0, (t - clearAt - 1.2) / 6))
-          const along = rescueStop + depart * 90
-          if (depart < 1) {
-            rescue.set(heading(at(along, openLane)))
-            rescueLights.forEach((l, i) => {
-              l.position = at(along + (i ? -0.8 : 0.8), openLane, 2.5).p
-              const on = (Math.sin(t * 8) > 0) === (i === 0)
-              l.color = tinted(i === 0 ? Cesium.Color.RED : Cesium.Color.BLUE, on ? 0.7 : 0.12)
-              l.show = true
-            })
-          } else {
-            rescue.set(null)
-            rescueLights.forEach((l) => (l.show = false))
-          }
-        } else {
-          rescue.set(null)
-          rescueLights.forEach((l) => (l.show = false))
+        rescueLights.forEach((l, i) => {
+          l.show = rescueVisible
+          if (!rescueVisible) return
+          l.position = at(rescueAlong + (i ? -0.8 : 0.8), rescueLane, 2.5).p
+          const on = (Math.sin(t * 8) > 0) === (i === 0)
+          l.color = tinted(i === 0 ? Cesium.Color.RED : Cesium.Color.BLUE, on ? 0.85 : 0.15)
+        })
+        towLights.forEach((l, i) => {
+          l.show = towTruckVisible
+          if (!towTruckVisible) return
+          l.position = at(towAlong + (i ? -0.8 : 0.8), closedLane, 2.5).p
+          const on = (Math.sin(t * 7 + i) > 0)
+          l.color = tinted(Cesium.Color.ORANGE, on ? 0.8 : 0.15)
+        })
+        const stage =
+          step === 0 ? '接警与视频复核 · 后方车辆排队'
+            : step === 1 ? '车道管制 · 锥桶渐变封闭，社会车辆低速通过'
+              : step === 2 && !towPhase ? '救援车进场 · 现场警戒与伤员处置'
+                : step === 3 && k < 0.55 ? '清障车拖离事故车 · 排队车辆依次放行'
+                  : '解除管制 · 双车道恢复通行'
+        if (stage !== lastStage) {
+          stageLabel.text = stage
+          lastStage = stage
         }
-        crashLabel.show = cordon || sceneHold
-        controlLabel.show = cordon || sceneHold
+        crashLabel.show = cordon || onSite || (towPhase && tow < 18)
+        controlLabel.show = conesVisible
+        stageLabel.show = true
       },
     }
   }
@@ -1262,7 +1627,7 @@ export function useTwinSimulation(options: SimOptions) {
       faultBeacon.position = new Cesium.Cartesian3(side.p.x, side.p.y, faulty.c.z)
     }
     const faultLabel = faulty
-      ? addLabel('异常：射流风机停机 · 已生成工单 WO-0317', new Cesium.Cartesian3(faulty.c.x, faulty.c.y, faulty.c.z + 1.2), '#d9363e')
+      ? addLabel('推演异常：射流风机停机 · 工单 WO-0317', new Cesium.Cartesian3(faulty.c.x, faulty.c.y, faulty.c.z + 1.2), '#d9363e')
       : null
     const beam = addSprite('glow', 0.55, Cesium.Color.fromCssColorString('#ffe7a0'))
     const footprints = Array.from({ length: 8 }, () => ({
@@ -1285,12 +1650,14 @@ export function useTwinSimulation(options: SimOptions) {
       walkFrom: 0,
       walkTo: 0,
       walkDriven: true,
+      walkLateral: -0.75,
+      audit: () => emptyClearanceAudit(),
       update(t, _dt, step) {
         if (t - labelAt > 0.5 || labelAt === 0) {
           labelAt = t
           fanLabels.forEach((f) => {
             const tel = options.fx.telemetryOf(f.index)
-            f.label.text = `${f.rig.name.replace('风机_八片扭转叶轮', '射流风机 ')} · ${tel.running ? `${tel.rpm}rpm` : '停机'}`
+            f.label.text = `${f.rig.name.replace('风机_八片扭转叶轮', '射流风机 ')} · ${tel.running ? `${tel.rpm}rpm` : '停机'}（推演）`
             f.label.backgroundColor = Cesium.Color.fromCssColorString(tel.running ? '#1d6fd1' : '#d9363e').withAlpha(0.82)
             f.label.show = step >= 1
           })
@@ -1331,13 +1698,14 @@ export function useTwinSimulation(options: SimOptions) {
     return frame(deck, progressBy(deck, pe, cam.along), cam.lateral, cam.height)
   }
 
-  /** 积水放在进洞后、断面完整的一段，避开被切断的洞口最低点 */
+  /** 积水贴近洞口真实低点，但向内退一段避开被切断的洞口断面 */
   function floodOriginMeters(): number {
     const length = path('lower').length
-    return Math.min(Math.max(80, length * 0.2), Math.max(40, length - 90))
+    const byFraction = Math.min(Math.max(8, length * 0.04), Math.max(8, length * 0.12))
+    return Math.min(length * 0.2, byFraction)
   }
 
-  /** 事件基准进度：积水取池沿起点，其余取配置 */
+  /** 事件基准进度：积水取洞口内低点，其余取配置 */
   function eventBaseProgress(): number {
     const d = def()
     if (d.id !== 'flood') return d.eventProgress
@@ -1443,22 +1811,37 @@ export function useTwinSimulation(options: SimOptions) {
     })
   }
 
+  /** 第一人称机位与推演步骤保持一致：切到该视角时不会跳回全程入口 */
+  function walkStartAlong(step = state.step, k = state.stepProgress): number {
+    const d = def()
+    const scene = fxScene!
+    if (scene.walkDriven) {
+      return (clamp01((step + k) / d.steps.length)) * path(d.deck as Deck).length
+    }
+    return walkAlongAtStep(scene.walkFrom, scene.walkTo, step, k, d.steps.length)
+  }
+
   function setView(view: TwinView) {
     if (!state.active || !v || !fxScene) return
-    state.view = view
-    const interior = view !== 'overview'
+    // VR 分屏下不做全景环绕，避免头显里出现持续自动转场。
+    const target: TwinView = state.stereo && view === 'overview' ? 'event' : view
+    state.view = target
+    const interior = target !== 'overview'
     setInterior(interior)
     options.setXray(!interior)
     options.fx.setSeeThrough(!interior)
-    if (view === 'overview') {
+    if (target === 'overview') {
       state.orbit = true
       enterOverview()
-    } else if (view === 'event') {
+    } else if (target === 'event') {
       flyCamera(lookFrom(eventFrame(), fxScene.focus))
     } else {
-      walkAlong = fxScene.walkDriven ? 8 : fxScene.walkFrom
+      walkAlong = walkStartAlong()
       const f = walkFrame()
-      flyCamera(lookFrom(f, Cesium.Cartesian3.add(f.p, f.dir, new Cesium.Cartesian3())), 1.1)
+      const targetPoint = fxScene.walkDriven
+        ? Cesium.Cartesian3.add(f.p, f.dir, new Cesium.Cartesian3())
+        : fxScene.focus
+      flyCamera(lookFrom(f, targetPoint), 1.1)
     }
     v.scene.requestRender()
   }
@@ -1467,12 +1850,13 @@ export function useTwinSimulation(options: SimOptions) {
   function walkFrame(): Frame {
     const d = def()
     const deck = d.deck as Deck
+    const walkLateral = fxScene!.walkLateral ?? -0.6
     if (fxScene!.walkDriven) {
       const progress = clamp01(1 - walkAlong / path(deck).length)
-      const f = frame(deck, progress, -0.75, 1.62)
+      const f = frame(deck, progress, walkLateral, 1.62)
       return { ...f, dir: Cesium.Cartesian3.negate(f.dir, new Cesium.Cartesian3()) }
     }
-    const f = frame(deck, progressBy(deck, eventBaseProgress(), walkAlong), -0.6, 1.7)
+    const f = frame(deck, progressBy(deck, eventBaseProgress(), walkAlong), walkLateral, 1.7)
     const towards = Math.sign(fxScene!.walkTo - fxScene!.walkFrom) || 1
     return towards > 0 ? f : { ...f, dir: Cesium.Cartesian3.negate(f.dir, new Cesium.Cartesian3()) }
   }
@@ -1487,12 +1871,16 @@ export function useTwinSimulation(options: SimOptions) {
       camera.lookAt(overviewCenter(), new Cesium.HeadingPitchRange(orbitHeading, orbitPitch, orbitRange))
       camera.lookAtTransform(Cesium.Matrix4.IDENTITY)
     } else if (state.view === 'walk' && state.playing) {
-      const deck = def().deck as Deck
+      const d = def()
+      const deck = d.deck as Deck
       if (fxScene.walkDriven) {
         walkAlong = Math.min(path(deck).length, walkAlong + dt * 3 * state.rate)
       } else {
+        // 行进速度与四步总时长一致，切步骤或倍速后不会与遥测曲线脱节。
+        const total = scenarioDuration(d.steps.map((s) => s.duration))
         const towards = Math.sign(fxScene.walkTo - fxScene.walkFrom) || 1
-        const nextAlong = walkAlong + dt * 1.5 * state.rate * towards
+        const speed = Math.abs(fxScene.walkTo - fxScene.walkFrom) / Math.max(1, total)
+        const nextAlong = walkAlong + dt * speed * state.rate * towards
         walkAlong = towards > 0 ? Math.min(fxScene.walkTo, nextAlong) : Math.max(fxScene.walkTo, nextAlong)
       }
       const f = walkFrame()
@@ -1525,6 +1913,7 @@ export function useTwinSimulation(options: SimOptions) {
     const d = def()
     state.telemetry = d.telemetry(state.step, state.stepProgress)
     state.devices = d.devices(state.step, state.stepProgress)
+    state.clearance = fxScene?.audit?.() ?? emptyClearanceAudit()
   }
 
   function advance(dt: number) {
@@ -1564,7 +1953,7 @@ export function useTwinSimulation(options: SimOptions) {
   }
 
   function tick(now: number) {
-      raf = 0
+    raf = 0
     if (!state.active || !v || v.isDestroyed()) return
     const dt = last ? Math.min(0.1, (now - last) / 1000) : 0
     last = now
@@ -1573,19 +1962,31 @@ export function useTwinSimulation(options: SimOptions) {
     updateCamera(dt)
     syncTelemetry()
     v.scene.requestRender()
-      raf = requestAnimationFrame(tick)
-    }
+    raf = requestAnimationFrame(tick)
+  }
 
   /* ================= 生命周期 ================= */
+
+  /** 四类工况启动时先统一接管为常规通风；火灾/巡检构造器再替换为各自的专用计划。 */
+  function applyBaselineVentilation() {
+    const d = def()
+    options.fx.setOverride({
+      label: `推演 · ${d.label} · 常规通风`,
+      mode: 'normal',
+      level: () => 0.72,
+      vent: false,
+    })
+  }
 
   function buildEffects() {
     if (!v) return
     disposeEffects()
+    state.clearance = emptyClearanceAudit()
     root = new Cesium.PrimitiveCollection()
     billboards = new Cesium.BillboardCollection({ modelMatrix: transform, scene: v.scene })
     root.add(billboards)
     v.scene.primitives.add(root)
-    options.fx.setOverride(null)
+    applyBaselineVentilation()
     const id = state.scenario
     fxScene = id === 'fire' ? buildFire() : id === 'flood' ? buildFlood() : id === 'accident' ? buildAccident() : buildPatrol()
   }
@@ -1598,62 +1999,144 @@ export function useTwinSimulation(options: SimOptions) {
     fxScene = null
   }
 
-  function resetClock() {
-    simTime = 0
+  function clearError() {
+    window.clearTimeout(errorTimer)
+    errorTimer = 0
+    state.error = ''
+  }
+
+  function setError(message: string, transient = false) {
+    clearError()
+    state.error = message
+    if (transient) {
+      errorTimer = window.setTimeout(() => {
+        if (state.error === message) state.error = ''
+        errorTimer = 0
+      }, 6500)
+    }
+  }
+
+  /** 失败、取消或退出时统一回收；只要 onEnter 改过外部状态，就确保 onExit 被调用一次。 */
+  function abortPending(message?: string) {
+    const hadEnter = enterPending
+    cancelAnimationFrame(raf)
+    raf = 0
+    removeInputs?.()
+    removeInputs = null
+    options.fx.setOverride(null)
+    if (v && !v.isDestroyed()) {
+      try {
+        setInterior(false)
+        if (v.scene.useWebVR) v.scene.useWebVR = false
+      } catch {
+        /* viewer 可能正在销毁，忽略 */
+      }
+    }
+    options.setXray(false)
+    disposeEffects()
+    restoreScene?.()
+    restoreScene = null
+    state.active = false
+    state.playing = false
+    state.finished = false
+    state.stereo = false
+    state.telemetry = []
+    state.devices = []
+    state.clearance = emptyClearanceAudit()
+    state.loading = false
+    v = null
+    enterPending = false
+    if (hadEnter) options.onExit()
+    if (message) setError(message)
+  }
+
+  function resetClock(step = 0) {
+    const d = def()
+    const s = Math.max(0, Math.min(d.steps.length - 1, Math.floor(Number.isFinite(step) ? step : 0)))
+    simTime = scenarioDuration(d.steps.slice(0, s).map((x) => x.duration))
     stepElapsed = 0
-    walkAlong = 0
-    state.step = 0
+    state.step = s
     state.stepProgress = 0
     state.finished = false
-    state.playing = true
+    // 尊重系统减少动效：进入后停在首帧，用户仍可手动播放/切步。
+    state.playing = !reducedMotion()
     last = 0
+    walkAlong = fxScene ? walkStartAlong(s, 0) : 0
   }
 
   function bindInputs(vv: Cesium.Viewer) {
     const canvas = vv.scene.canvas
-    const stopOrbit = () => {
+    /** 拖拽/滚轮代表用户接管观察：暂停自动推演和环绕，而不是每帧把相机抢回去。 */
+    const onNavigate = () => {
       if (state.view === 'overview') state.orbit = false
+      if (state.playing) {
+        state.playing = false
+        last = 0
+      }
+    }
+    const onVisibility = () => {
+      if (document.hidden && state.playing) {
+        state.playing = false
+        last = 0
+      }
     }
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || e.altKey || e.ctrlKey || e.metaKey) return
       const target = e.target as HTMLElement | null
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
+      const tag = target?.tagName ?? ''
+      // 控件里的空格/方向键交给控件本身；避免按“暂停”按钮时又触发一次全局播放。
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || target?.isContentEditable) return
       if (e.key === 'Escape') {
         if (state.stereo) setStereo(false)
         else stop()
-      } else if (e.key === ' ') {
+        return
+      }
+      if (/^(BUTTON|A)$/.test(tag)) return
+      if (e.key === ' ') {
         e.preventDefault()
         togglePlay()
       } else if (e.key === 'ArrowRight') nextStep()
       else if (e.key === 'ArrowLeft') prevStep()
     }
-    canvas.addEventListener('pointerdown', stopOrbit)
-    canvas.addEventListener('wheel', stopOrbit, { passive: true })
+    canvas.addEventListener('pointerdown', onNavigate)
+    canvas.addEventListener('wheel', onNavigate, { passive: true })
     window.addEventListener('keydown', onKey)
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
-      canvas.removeEventListener('pointerdown', stopOrbit)
-      canvas.removeEventListener('wheel', stopOrbit)
+      canvas.removeEventListener('pointerdown', onNavigate)
+      canvas.removeEventListener('wheel', onNavigate)
       window.removeEventListener('keydown', onKey)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }
 
-  async function start(id: TwinScenarioId = state.scenario) {
+  async function start(
+    id: TwinScenarioId = state.scenario,
+    step = 0,
+    opts: { restart?: boolean } = {},
+  ): Promise<boolean> {
+    if (state.loading) return false
+    clearError()
     if (state.active) {
-      setScenario(id)
-      return
+      const same = id === state.scenario
+      if (!same || opts.restart || state.finished) setScenario(id, step, true)
+      else if (step !== state.step) setStep(step)
+      return true
     }
-    if (state.loading) return
     const vv = viewer()
     if (!vv || vv.scene.mode !== Cesium.SceneMode.SCENE3D) {
-      state.error = '请先切换到三维视图，再进入孪生仿真。'
-      return
+      setError('请先切换到三维视图，再进入孪生仿真。')
+      return false
     }
     const current = ++sequence
     state.loading = true
-    state.error = ''
+    enterPending = true
     try {
       options.onEnter()
       const tileset = await options.prepare()
-      if (current !== sequence || !viewer()) return
+      // stop() 已通过 sequence 接管并完成回收，这里不能再重复 onExit。
+      if (current !== sequence) return false
+      if (!viewer()) throw new Error('三维场景已释放，无法构建仿真场景。')
       if (!tileset || tileset.isDestroyed()) throw new Error('竣工模型未能加载，无法构建仿真场景。')
       v = vv
       transform = Cesium.Matrix4.clone(tileset.root.computedTransform)
@@ -1706,56 +2189,63 @@ export function useTwinSimulation(options: SimOptions) {
       state.stereo = false
       options.onActivated?.()
       buildEffects()
-      resetClock()
+      resetClock(step)
       applyStep()
       removeInputs = bindInputs(vv)
       setView(fxScene?.walkDriven ? 'walk' : 'event')
-    raf = requestAnimationFrame(tick)
+      raf = requestAnimationFrame(tick)
+      return true
     } catch (err) {
-      state.error = err instanceof Error ? err.message : String(err)
-      options.onExit()
+      if (current !== sequence) return false
+      abortPending(err instanceof Error ? err.message : String(err))
+      return false
     } finally {
       if (current === sequence) state.loading = false
     }
   }
 
-  function setScenario(id: TwinScenarioId) {
+  function setScenario(id: TwinScenarioId, step = 0, restart = false) {
+    clearError()
     if (!state.active) {
       state.scenario = id
+      state.step = Math.max(0, Math.min(TWIN_SCENARIOS[id].steps.length - 1, Math.floor(step)))
+      state.stepProgress = 0
+      state.finished = false
+      state.playing = false
+      state.telemetry = []
+      state.devices = []
+      state.clearance = emptyClearanceAudit()
       return
     }
-    if (id === state.scenario && !state.finished) return
+    if (id === state.scenario && !state.finished && !restart) {
+      if (step !== state.step) setStep(step)
+      return
+    }
+    const previousView = state.view
     state.scenario = id
-    const wasInterior = interiorOn
     buildEffects()
-    resetClock()
+    resetClock(step)
     applyStep()
-    setView(fxScene?.walkDriven ? 'walk' : wasInterior ? 'event' : 'overview')
+    const view: TwinView = state.stereo
+      ? 'event'
+      : fxScene?.walkDriven
+        ? 'walk'
+        : previousView === 'overview'
+          ? 'overview'
+          : 'event'
+    setView(view)
   }
 
   function stop() {
     sequence++
-    if (!state.active) {
-      state.loading = false
+    const wasLoading = state.loading
+    const wasActive = state.active
+    if (!wasActive && !wasLoading) {
+      clearError()
       return
     }
-    cancelAnimationFrame(raf)
-    raf = 0
-    removeInputs?.()
-    removeInputs = null
-    options.fx.setOverride(null)
-    options.fx.setSeeThrough(true)
-    options.setXray(false)
-    disposeEffects()
-    restoreScene?.()
-    restoreScene = null
-    state.active = false
-    state.playing = false
-    state.stereo = false
-    state.telemetry = []
-    state.devices = []
-    v = null
-    options.onExit()
+    abortPending()
+    clearError()
   }
 
   function togglePlay() {
@@ -1770,8 +2260,9 @@ export function useTwinSimulation(options: SimOptions) {
 
   function restart() {
     if (!state.active) return
+    clearError()
     buildEffects()
-    resetClock()
+    resetClock(0)
     applyStep()
     setView(state.view)
   }
@@ -1779,14 +2270,25 @@ export function useTwinSimulation(options: SimOptions) {
   function setStep(i: number) {
     if (!state.active || !fxScene) return
     const d = def()
-    const step = Math.max(0, Math.min(d.steps.length - 1, i))
+    const step = Math.max(0, Math.min(d.steps.length - 1, Math.floor(i)))
+    clearError()
+    // 手动跳转用于检视：暂停自动推进，避免刚切到某一步就被时钟带走。
+    state.playing = false
+    state.orbit = false
+    state.finished = false
     state.step = step
     state.stepProgress = 0
-    state.finished = false
     stepElapsed = 0
-    if (fxScene.walkDriven) {
-      walkAlong = (step / d.steps.length) * path(d.deck as Deck).length
-      if (state.view === 'walk' && v) v.camera.setView(lookFrom(walkFrame(), Cesium.Cartesian3.add(walkFrame().p, walkFrame().dir, new Cesium.Cartesian3())))
+    simTime = scenarioDuration(d.steps.slice(0, step).map((s) => s.duration))
+    walkAlong = walkStartAlong(step, 0)
+    last = 0
+    if (state.view === 'walk' && v) {
+      v.camera.cancelFlight()
+      const f = walkFrame()
+      const target = fxScene.walkDriven
+        ? Cesium.Cartesian3.add(f.p, f.dir, new Cesium.Cartesian3())
+        : fxScene.focus
+      v.camera.setView(lookFrom(f, target))
     }
     applyStep()
   }
@@ -1795,32 +2297,50 @@ export function useTwinSimulation(options: SimOptions) {
   const prevStep = () => setStep(state.step - 1)
 
   function setRate(rate: 1 | 2 | 4) {
-    state.rate = rate
+    state.rate = rate === 2 || rate === 4 ? rate : 1
   }
 
   function setOrbit(on: boolean) {
     state.orbit = on
-    if (on && state.view === 'overview') enterOverview()
+    if (on && state.view === 'overview') {
+      enterOverview()
+      state.playing = true
+      last = 0
+    }
   }
 
   /** Cesium 立体分屏（Cardboard / WebVR）；正交投影下不可用 */
   function setStereo(on: boolean) {
     const vv = v
     if (!vv || vv.isDestroyed()) return
+    if (on && vv.scene.mode !== Cesium.SceneMode.SCENE3D) {
+      setError('立体分屏需要三维透视相机；请先退出二维或正交视图。', true)
+      return
+    }
     try {
       vv.scene.useWebVR = on
       state.stereo = on
+      clearError()
       if (on && state.view === 'overview') setView('event')
     } catch (err) {
       state.stereo = false
-      state.error = err instanceof Error ? err.message : '当前视图不支持立体分屏'
+      try {
+        vv.scene.useWebVR = false
+      } catch {
+        /* ignore */
+      }
+      setError(err instanceof Error ? err.message : '当前视图不支持立体分屏', true)
     }
     vv.scene.requestRender()
   }
 
   function destroy() {
     stop()
+    clearError()
   }
+
+  /** 供 DEV 钩子 / 浏览器回归读取当前帧净距结果；不是实时 IoT 数据。 */
+  const geometryAudit = (): ClearanceAudit => fxScene?.audit?.() ?? emptyClearanceAudit()
 
   return {
     state,
@@ -1837,6 +2357,8 @@ export function useTwinSimulation(options: SimOptions) {
     setRate,
     setOrbit,
     setStereo,
+    clearError,
+    geometryAudit,
     isActive: () => state.active || state.loading,
   }
 }
