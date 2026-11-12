@@ -5,6 +5,9 @@ import cesium from 'vite-plugin-cesium'
 /** chokidar 5 的字符串忽略是全等匹配，glob 无效。按路径段跳过，否则会监听 node_modules 和 5 万+ 瓦片，页面请求一直挂起。 */
 function isUnwatchedPath(file: string): boolean {
   const parts = String(file).replace(/\\/g, '/').split('/')
+  const name = parts[parts.length - 1] ?? ''
+  // Word 打开 docx 时文件被独占，chokidar 去 watch 会直接把开发服务打崩
+  if (name.startsWith('~$') || /\.(docx?|xlsx?|pptx?)$/i.test(name)) return true
   return parts.some(
     (part) =>
       part === 'node_modules' ||

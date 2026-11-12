@@ -1,575 +1,495 @@
 """
-根据仓库实现情况生成/更新毕业论文 docx。
+按《基于数字孪生技术的CIM平台在城市精细化治理中的应用与实践》的字体、字号、
+页边距和行距生成两湖隧道论文。
+
+版式对照：
+- A4，上/下 2.54 cm，左/右 3.17 cm
+- 题目：宋体小二（18 磅）加粗，1.5 倍行距，居中
+- 摘要、关键词、一级标题、二级标题、正文：宋体四号（14 磅）
+- 摘要行距最小值 24 磅；关键词与正文行距固定值 24 磅
+- 正文首行缩进 2 字符；一级标题段前段后 15.6 磅
+- 图题、表题：宋体四号居中；表格内文宋体五号
+
 运行：python scripts/create_thesis.py
-截图占位处可在替换为真实图片路径后再次运行本脚本（见 placeholder_figure 的 asset 参数）。
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from docx import Document
-from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Inches, Pt, RGBColor, Twips
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'docs/论文/两湖隧道智能运维管理平台设计与实现.docx'
+OUT = ROOT / "docs/论文/两湖隧道智能运维管理平台设计与实现.docx"
+IMG = ROOT / "docs/论文/images"
 OUT.parent.mkdir(parents=True, exist_ok=True)
+IMG.mkdir(parents=True, exist_ok=True)
 
-d = Document()
-sec = d.sections[0]
-sec.top_margin = Inches(0.75)
-sec.bottom_margin = Inches(0.75)
-sec.left_margin = Inches(0.85)
-sec.right_margin = Inches(0.85)
-
-style = d.styles['Normal']
-style.font.name = '宋体'
-style._element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')
-style.font.size = Pt(10.5)
-for nm in ('Title', 'Heading 1', 'Heading 2', 'Heading 3'):
-    s = d.styles[nm]
-    s.font.name = '黑体'
-    s._element.rPr.rFonts.set(qn('w:eastAsia'), '黑体')
-    s.font.color.rgb = RGBColor(27, 57, 88)
-
+SONG = "宋体"
+BLACK = RGBColor(0, 0, 0)
 FIG = 0
 TAB = 0
 
 
-def shade(cell: object, color: str) -> None:
-    tc_pr = cell._tc.get_or_add_tcPr()
-    sh = OxmlElement('w:shd')
-    sh.set(qn('w:fill'), color)
-    tc_pr.append(sh)
+def _rfonts(run, east: str, ascii_font: str) -> None:
+    rpr = run._element.get_or_add_rPr()
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.insert(0, rfonts)
+    rfonts.set(qn("w:ascii"), ascii_font)
+    rfonts.set(qn("w:hAnsi"), ascii_font)
+    rfonts.set(qn("w:eastAsia"), east)
+    rfonts.set(qn("w:cs"), "Times New Roman")
 
 
-def para(text: str = '', *, bold: bool = False, center: bool = False, indent: bool = True):
+def paint(run, size: float, *, bold: bool | None = False, east: str = SONG, ascii_font: str = SONG) -> None:
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.italic = False
+    run.font.color.rgb = BLACK
+    run.font.name = ascii_font
+    _rfonts(run, east, ascii_font)
+
+
+def _spacing(p, *, before: int, after: int, line: int | None, rule: str | None) -> None:
+    ppr = p._p.get_or_add_pPr()
+    spacing = ppr.find(qn("w:spacing"))
+    if spacing is None:
+        spacing = OxmlElement("w:spacing")
+        ppr.append(spacing)
+    spacing.set(qn("w:before"), str(before))
+    spacing.set(qn("w:after"), str(after))
+    if line is None:
+        if qn("w:line") in spacing.attrib:
+            del spacing.attrib[qn("w:line")]
+        if qn("w:lineRule") in spacing.attrib:
+            del spacing.attrib[qn("w:lineRule")]
+    else:
+        spacing.set(qn("w:line"), str(line))
+        spacing.set(qn("w:lineRule"), rule or "exact")
+
+
+def _indent(p, first: int) -> None:
+    ppr = p._p.get_or_add_pPr()
+    ind = ppr.find(qn("w:ind"))
+    if ind is None:
+        ind = OxmlElement("w:ind")
+        ppr.append(ind)
+    if first <= 0:
+        ind.set(qn("w:firstLine"), "0")
+        ind.set(qn("w:firstLineChars"), "0")
+    else:
+        ind.set(qn("w:firstLine"), str(first))
+        ind.set(qn("w:firstLineChars"), "200")
+
+
+def add_p(
+    *,
+    align=WD_ALIGN_PARAGRAPH.LEFT,
+    before: int = 0,
+    after: int = 0,
+    line: int | None = 480,
+    rule: str | None = "exact",
+    first: int = 0,
+):
     p = d.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER if center else WD_ALIGN_PARAGRAPH.JUSTIFY
-    if indent and not center:
-        p.paragraph_format.first_line_indent = Pt(21)
-    r = p.add_run(text)
-    r.bold = bold
+    p.alignment = align
+    p.paragraph_format.space_before = Twips(before)
+    p.paragraph_format.space_after = Twips(after)
+    _spacing(p, before=before, after=after, line=line, rule=rule)
+    _indent(p, first)
     return p
 
 
-def heading(t: str, level: int = 1) -> None:
-    d.add_heading(t, level=level)
+def run(p, text: str, size: float, *, bold: bool | None = False) -> None:
+    r = p.add_run(text)
+    paint(r, size, bold=bold)
+    return r
 
 
-def next_fig() -> int:
-    global FIG
-    FIG += 1
-    return FIG
+def title(text: str) -> None:
+    p = add_p(align=WD_ALIGN_PARAGRAPH.CENTER, line=360, rule="auto")
+    run(p, text, 18, bold=True)
 
 
-def next_tab() -> int:
+def abstract(text: str) -> None:
+    p = add_p(line=480, rule="atLeast")
+    run(p, "[摘要]", 14, bold=True)
+    run(p, " " + text, 14, bold=False)
+
+
+def keywords(text: str) -> None:
+    p = add_p(line=480, rule="exact")
+    run(p, "[关键词] ", 14, bold=True)
+    run(p, text, 14, bold=False)
+
+
+def h1(text: str) -> None:
+    p = add_p(before=312, after=312, line=480, rule="exact")
+    run(p, text, 14, bold=True)
+
+
+def h2(text: str) -> None:
+    p = add_p(line=480, rule="exact")
+    run(p, text, 14, bold=True)
+
+
+def body(text: str) -> None:
+    p = add_p(first=560, line=480, rule="exact")
+    run(p, text, 14, bold=False)
+
+
+def lead(label: str, text: str) -> None:
+    p = add_p(line=480, rule="exact")
+    run(p, label, 14, bold=True)
+    run(p, text, 14, bold=False)
+
+
+def caption(text: str) -> None:
+    p = add_p(align=WD_ALIGN_PARAGRAPH.CENTER, line=480, rule="exact")
+    run(p, text, 14, bold=False)
+
+
+def shade(cell, color: str) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    sh = OxmlElement("w:shd")
+    sh.set(qn("w:fill"), color)
+    sh.set(qn("w:val"), "clear")
+    tc_pr.append(sh)
+
+
+def add_table(title_text: str, headers: list[str], rows: list[list[str]]) -> None:
     global TAB
     TAB += 1
-    return TAB
-
-
-def table(headers: list[str], rows: list[list[str]], widths=None):
-    t = d.add_table(rows=1, cols=len(headers))
-    t.style = 'Table Grid'
+    caption(f"表 {TAB} {title_text}")
+    t = d.add_table(rows=1 + len(rows), cols=len(headers))
+    t.style = "Table Grid"
     t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    t.autofit = True
     for i, h in enumerate(headers):
-        c = t.rows[0].cells[i]
-        c.text = h
-        shade(c, '173A5E')
-        for r in c.paragraphs[0].runs:
-            r.font.color.rgb = RGBColor(255, 255, 255)
-            r.bold = True
-    for row in rows:
-        cells = t.add_row().cells
-        for i, v in enumerate(row):
-            cells[i].text = str(v)
-            cells[i].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-    return t
+        cell = t.rows[0].cells[i]
+        cell.text = ""
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _indent(p, 0)
+        _spacing(p, before=40, after=40, line=240, rule="auto")
+        run(p, h, 10.5, bold=True)
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        shade(cell, "F2F2F2")
+    for r_i, row in enumerate(rows):
+        for c_i, val in enumerate(row):
+            cell = t.rows[r_i + 1].cells[c_i]
+            cell.text = ""
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            _indent(p, 0)
+            _spacing(p, before=40, after=40, line=240, rule="auto")
+            run(p, val, 10.5, bold=False)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    gap = add_p(line=120, rule="exact")
+    run(gap, "", 14)
 
 
-def figcaption(text: str) -> None:
-    p = para(text, center=True)
-    if p.runs:
-        p.runs[0].italic = True
+def figure(asset: str, text: str, width_in: float = 5.5) -> None:
+    global FIG
+    FIG += 1
+    path = IMG / asset
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    p = add_p(align=WD_ALIGN_PARAGRAPH.CENTER, line=None, rule=None)
+    pic = p.add_run()
+    pic.add_picture(str(path), width=Inches(width_in))
+    caption(f"图 {FIG} {text}")
 
 
-def diagram_caption(title: str, rows: list[list[str]], caption: str) -> None:
-    n = next_tab()
-    heading(f'表{n} {title}', 3)
-    table(['层次/组成', '职责与实现'], rows)
-    figcaption(f'表{n} {caption}')
+def _font(size: int):
+    from PIL import ImageFont
+
+    for name in ("msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc"):
+        path = Path(r"C:\Windows\Fonts") / name
+        if path.is_file():
+            return ImageFont.truetype(str(path), size)
+    from PIL import ImageFont as F
+
+    return F.load_default()
 
 
-def placeholder_figure(
-    hint: str,
-    caption: str,
-    *,
-    asset: str | None = None,
-    width_in: float = 5.8,
-) -> None:
-    """asset 为相对仓库根目录的图片路径；为 None 时输出灰色占位框。"""
-    n = next_fig()
-    path = ROOT / asset if asset else None
-    p = d.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    if path and path.is_file():
-        p.add_run().add_picture(str(path), width=Inches(width_in))
-    else:
-        t = d.add_table(rows=1, cols=1)
-        t.alignment = WD_TABLE_ALIGNMENT.CENTER
-        c = t.rows[0].cells[0]
-        shade(c, 'E8EDF2')
-        cp = c.paragraphs[0]
-        cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = cp.add_run(
-            f'【截图占位 · 图{n}】\n{hint}\n'
-            f'建议 1920×1080 或 16:9，PNG/JPG；替换后在本脚本对应项设置 asset= 路径并重新运行。'
-        )
-        run.font.color.rgb = RGBColor(80, 96, 112)
-    figcaption(f'图{n} {caption}')
+def draw_boxes(path: Path, title_text: str, boxes: list[tuple[str, str]]) -> None:
+    from PIL import Image, ImageDraw
+
+    w, h = 1400, 420
+    im = Image.new("RGB", (w, h), (255, 255, 255))
+    dr = ImageDraw.Draw(im)
+    dr.rectangle((8, 8, w - 8, h - 8), outline=(0, 0, 0), width=2)
+    dr.text((40, 28), title_text, fill=(0, 0, 0), font=_font(28))
+    n = len(boxes)
+    gap = 36
+    bw = (w - 80 - gap * (n - 1)) // n
+    bh = 230
+    y0 = 110
+    for i, (head, body_text) in enumerate(boxes):
+        x0 = 40 + i * (bw + gap)
+        dr.rectangle((x0, y0, x0 + bw, y0 + bh), outline=(0, 0, 0), width=2)
+        dr.rectangle((x0, y0, x0 + bw, y0 + 48), fill=(0, 0, 0))
+        dr.text((x0 + 16, y0 + 10), head, fill=(255, 255, 255), font=_font(22))
+        line = ""
+        yy = y0 + 64
+        font = _font(18)
+        for ch in body_text:
+            trial = line + ch
+            if dr.textlength(trial, font=font) > bw - 32:
+                dr.text((x0 + 16, yy), line, fill=(0, 0, 0), font=font)
+                yy += 28
+                line = ch
+            else:
+                line = trial
+        if line:
+            dr.text((x0 + 16, yy), line, fill=(0, 0, 0), font=font)
+        if i < n - 1:
+            ax = x0 + bw + 6
+            mid = y0 + bh // 2
+            dr.line((ax, mid, ax + gap - 14, mid), fill=(0, 0, 0), width=2)
+            dr.polygon([(ax + gap - 18, mid - 7), (ax + gap - 6, mid), (ax + gap - 18, mid + 7)], fill=(0, 0, 0))
+    im.save(path)
 
 
-# ── 封面 ──
-p = d.add_paragraph()
-p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-p.paragraph_format.space_before = Pt(56)
-r = p.add_run('两湖隧道（南湖段）智能运维管理平台\n设计与实现')
-r.bold = True
-r.font.name = '黑体'
-r._element.rPr.rFonts.set(qn('w:eastAsia'), '黑体')
-r.font.size = Pt(24)
-r.font.color.rgb = RGBColor(23, 58, 94)
-para('——基于 BIM 与 Cesium 的隧道三维可视化运维原型研究', center=True)
-for _ in range(3):
-    d.add_paragraph('')
-for text in (
-    '本科/项目设计论文（依据 lianghu-yunwei 代码仓库编写）',
-    '作者：[请填写姓名]　　学号：[请填写]',
-    '指导教师：[请填写]　　学院/专业：[请填写]',
-    '完成时间：2026年11月',
+draw_boxes(
+    IMG / "fig-architecture.png",
+    "系统逻辑分层",
+    [
+        ("表现层", "七个业务页面、告警与资料面板、巡游与孪生控制"),
+        ("场景协调层", "Cesium 生命周期、相机、模型图层与拾取"),
+        ("领域功能层", "聚合、剖切、巡游、材质、通风与工况推演"),
+        ("数据资源层", "施工与竣工模型、设备目录、监测与应急数据"),
+    ],
+)
+draw_boxes(
+    IMG / "fig-flow.png",
+    "空间交互链路",
+    [
+        ("用户输入", "告警、设备、聚合成员或名称检索"),
+        ("对象解析", "稳定点位标识或竣工构件目录"),
+        ("状态协调", "图层、视图模式与巡游状态"),
+        ("空间反馈", "相机定位、构件高亮与资料展示"),
+    ],
+)
+
+d = Document()
+sec = d.sections[0]
+sec.page_width = Twips(11906)
+sec.page_height = Twips(16838)
+sec.top_margin = Twips(1440)
+sec.bottom_margin = Twips(1440)
+sec.left_margin = Twips(1800)
+sec.right_margin = Twips(1800)
+sec.header_distance = Twips(851)
+sec.footer_distance = Twips(992)
+grid = OxmlElement("w:docGrid")
+grid.set(qn("w:type"), "lines")
+grid.set(qn("w:linePitch"), "312")
+sec._sectPr.append(grid)
+
+normal = d.styles["Normal"]
+normal.font.size = Pt(14)
+normal.font.name = SONG
+normal.font.color.rgb = BLACK
+normal._element.rPr.rFonts.set(qn("w:eastAsia"), SONG)
+normal._element.rPr.rFonts.set(qn("w:ascii"), SONG)
+normal._element.rPr.rFonts.set(qn("w:hAnsi"), SONG)
+
+title("两湖隧道（南湖段）智能运维管理平台设计与实现")
+abstract(
+    "隧道机电、结构与交通设施沿里程分布，运维人员需要在同一界面中同时确认设备位置、所属区段和业务状态。"
+    "本文设计并实现两湖隧道（南湖段）智能运维管理平台。平台以 Vue 3 与 TypeScript 组织总览、智能交通、智慧养护、"
+    "智慧监测、数字应急、数字服务和资产资料中心七个业务视图，以 Cesium 在同一三维场景中承载全局施工模型与局部竣工模型，"
+    "完成设备定位、图层编排、跨模型剖切、内部巡游、告警联动、资产资料查看和应急工况推演。"
+    "施工模型与竣工模型按各自坐标变换参与同一世界剖切平面；竣工构件按模型目录建立可定位图标，并在远景做屏幕空间聚合；"
+    "内部巡游沿竣工路面采样点按弧长推进；数字应急按火灾疏散、积水排涝、交通事故和日常巡检组织分步工况，并与三维巡游及通风效果联动。"
+    "路径、图层、剖切和工况计算由自动化测试核查。平台把空间对象、业务信息和交互操作放在同一场景中，为隧道运维检视提供统一入口。"
+)
+keywords("隧道运维；数字孪生；建筑信息模型；Cesium；三维可视化；工况推演")
+
+h1("1.引言")
+h2("1.1研究背景")
+body(
+    "随着交通基础设施数字化的推进，隧道运维正在从平面台账和分散监控，转向以建筑信息模型和地理场景为底座的空间化管理。"
+    "BIM 以构件保存几何与属性，三维场景提供缩放、拾取和相机定位。把二者放在同一运维界面中，可以把告警、监测、资产和应急步骤落到对应空间位置，缩短查找和核对的路径。"
+)
+body(
+    "两湖隧道（南湖段）线位长、机电与结构设施种类多，施工模型和竣工模型分别描述整段空间关系和可独立检视的设备。"
+    "值班、养护和应急处置都需要从“看见全隧道”走到“定位到具体构件”，并在定位之后继续查看资料、监测或工况步骤。本文围绕这一使用过程，给出可浏览、可检索、可定位、可剖切、可巡游的平台设计与实现。"
+)
+h2("1.2问题陈述")
+body("隧道运维场景同时面对模型尺度、对象标识和业务过程三类问题：")
+lead("空间信息与业务信息分离：", "设备台账、告警和监测曲线若不挂接到可定位的空间对象，值班人员仍需在图纸、列表和视频之间来回切换。")
+lead("多模型难以同屏检视：", "全局施工模型与局部竣工模型的原点并不相同，剖切、图层和相机若按各自局部坐标处理，内部结构无法在同一位置对齐。")
+lead("应急过程缺少连续表达：", "火灾排烟、积水排涝、交通事故和日常巡检包含步骤、持续时间和设备状态，仅用静态清单难以和隧道内部的巡游、高亮与通风效果一起查看。")
+h2("1.3研究意义")
+body(
+    "本文给出一套可运行的隧道运维场景组织方法。表现层按业务模块切换信息面板和默认图层，场景协调层统一相机、模型和拾取，领域功能层把剖切、聚合、巡游和工况推演算成可复用模块，数据资源层提供施工模型、竣工模型、设备目录以及监测与应急数据。"
+    "稳定的点位标识和构件目录使告警、资产和工况能够落到同一空间对象上，二维视图、内部巡游和剖切之间的状态可以恢复。该组织方式为隧道运维提供可操作的三维工作界面，并保留与现场监测、视频和工单继续衔接的对象标识。"
+)
+
+h1("2.平台总体架构设计")
+h2("2.1设计原则")
+body("平台遵循同一场景、稳定标识、状态可恢复和逻辑可核查四条原则。")
+lead("同一场景：", "七个业务页面共用三维场景容器。进入页面时按模块打开默认图层和信息面板，空间检视不因切换业务而另起一套模型。")
+lead("稳定标识：", "告警、监控、资产和工况通过点位标识或竣工构件编号发起定位，列表点选与场景点选打开同一资料面板。")
+lead("状态可恢复：", "二维视图和内部巡游期间暂停剖切，返回三维外部视角后恢复进入前的剖切与侧栏状态。")
+lead("逻辑可核查：", "路径采样、图层默认值、剖切换算、材质策略和工况插值与三维引擎分开，由单元测试和浏览器场景脚本分别核查。")
+h2("2.2总体架构层级")
+body("平台自下而上分为数据资源层、领域功能层、场景协调层和表现层，如图 1 所示。")
+figure("fig-architecture.png", "两湖隧道智能运维管理平台逻辑分层")
+lead("数据资源层：", "存放全局施工模型、局部竣工模型、可定位构件目录，以及监测、告警、工单和应急工况数据。模型以 3D Tiles 发布，业务对象以稳定标识与空间位置关联。")
+lead("领域功能层：", "负责屏幕空间聚合、跨模型剖切、路面采样巡游、材质与通风表达、工况步骤插值。这些计算不依赖具体页面，供各业务模块调用。")
+lead("场景协调层：", "管理 Cesium 场景生命周期、相机飞行、图层显隐、拾取与高亮。页面先完成标题和业务面板，再挂载三维场景，并在视角或模型变化时按需绘制。")
+lead("表现层：", "以 Vue 3、TypeScript 和 Vite 组织七个业务视图，以 Element Plus 提供控制组件，以 ECharts 表达监测曲线。告警横幅、资料面板、巡游控制和工况步骤在这一层与场景交互。")
+h2("2.3功能组成")
+body("功能按运维检视的实际动作划分，对应关系见表 1。七个业务模块共享场景，进入模块时采用各自的默认图层，见表 2。")
+add_table(
+    "功能需求与平台能力",
+    ["编号", "需求", "平台中的对应能力"],
+    [
+        ["F1", "整段与局部模型同屏", "施工模型交代空间关系，竣工段承载设备"],
+        ["F2", "设备可检索、可定位", "竣工目录中可独立定位的构件建立图标与资料"],
+        ["F3", "按业务模块组织图层", "各页面进入时采用对应的默认图层"],
+        ["F4", "查看模型内部结构", "X、Y、水平 Z 剖切，可选择作用模型"],
+        ["F5", "沿隧道内部检视", "按上下层路面采样路线巡游"],
+        ["F6", "事件与场景联动", "告警、监控和资产操作定位到对应点位或构件"],
+        ["F7", "应急过程可推演", "四类工况步骤、遥测与三维巡游联动"],
+        ["F8", "资料与模型一致", "资产列表与场景点选打开同一资料面板"],
+    ],
+)
+add_table(
+    "业务模块与场景侧重",
+    ["模块", "主要信息", "场景侧重"],
+    [
+        ["总览", "告警、交通、设备、工单与公众服务", "全图层与事件定位"],
+        ["智能交通", "视频点位、交通状态与诱导信息", "隧道环境、交通管控"],
+        ["智慧养护", "病害、工单与健康情况", "隧道环境、结构监测"],
+        ["智慧监测", "气体、照度、通风与沉降", "环境、环控、结构监测"],
+        ["数字应急", "火灾、积水、事故与巡检推演", "环境、环控、隧道机电"],
+        ["数字服务", "公众反馈与预警发布", "隧道环境"],
+        ["资产资料中心", "资产树与构件资料", "全部图层"],
+    ],
+)
+h2("2.4运行与交互要求")
+body(
+    "进入页面后优先加载施工与竣工模型并飞到隧道范围，底图、正射影像和倾斜摄影在场景设置中调节显隐与透明度，与 BIM 检视分开控制。"
+    "场景高度把手支持鼠标拖动、触屏和键盘方向键；系统开启减少动态效果时，自动动画让位于手动操作。"
+    "从二维返回三维、从巡游返回外部视角时，恢复进入前的剖切和侧栏，避免一次检视打乱上一次的观察条件。"
+)
+
+h1("3.关键技术实现")
+h2("3.1模型组织与跨模型剖切")
+body(
+    "全局施工模型与局部竣工模型以 3D Tiles 接入同一 Cesium 场景。两者局部原点不同，剖切平面先在世界坐标中确定，再按各模型根变换换算到局部坐标，使同一剖切位置在两个模型上对齐。"
+    "施工模型以半透明方式保留整段轮廓；竣工路面保持模型自带材质，观察内部时再开启路面透视。剖切可选择全部模型、竣工段或施工模型，支持轴向、位置和反向保留，重置后恢复完整模型。控制面板与三维场景见图 2。"
+)
+figure("fig-section.png", "模型剖切控制与三维场景")
+h2("3.2设备目录与空间点位")
+body(
+    "竣工模型目录中能够独立定位的构件生成分类图标，位置来自构件包围范围和模型变换。远景按屏幕像素距离聚合重叠图标，点击数字后展开成员并继续定位；告警和当前选中对象单独显示。"
+    "镜头靠近设备后隐藏外部图标，拉远后再显示，并用不同的进入、退出距离避免图标闪烁。巡游过程中隐藏外部图标，便于直接观察模型。以整段合并导出的构件保持为整体对象，不拆成单独点位。"
+    "资产资料中心用目录树对照三维模型，列表点选与场景点选打开同一资料面板，见图 3。"
+)
+figure("fig-asset.png", "资产资料中心与三维模型对照")
+h2("3.3内部巡游")
+body(
+    "巡游路线取自竣工模型道路构件的上下层路面，每层一组采样点，运行时转换到世界坐标并加上观察高度。播放按路径弧长和时间推进。"
+    "进入时从当前路线末端朝隧道内部行进，可切换上下层、暂停、反向和速度，并可按名称或构件编号检索设备。拖拽和滚轮会暂停播放，便于在当前位置环视。退出后恢复外部相机、图层和剖切状态。巡游画面见图 4。"
+)
+figure("fig-roaming.png", "竣工模型内部巡游")
+h2("3.4定位链路与场景加载")
+body(
+    "告警横幅、告警列表、监控窗口和资产列表都通过稳定的点位或构件标识发起一次定位。目标图层处于关闭状态时，先打开对应分组再移动相机。二维视图使用固定范围定位，重复点击同一设施保持同一视野。处理链路见图 5。"
+)
+figure("fig-flow.png", "从操作到空间反馈的处理链路")
+body(
+    "页面先完成标题和业务面板，再挂载三维场景。场景优先加载施工与竣工模型并飞到隧道范围，按需渲染，把绘制集中在视角或模型发生变化时。"
+    "工况脚本与三维引擎分开：步骤内的数值由起止值线性插值得到，再按阈值划分为正常、关注和告警三级，供界面进度和设备列表使用；场景按当前步骤播放相机、高亮和通风效果。"
+)
+
+h1("4.业务场景与运行效果")
+h2("4.1项目概况")
+body(
+    "平台面向两湖隧道（南湖段）的日常检视与应急推演。施工模型提供整段空间参照，局部竣工模型提供可进入的车道、设备和结构。"
+    "运行环境为支持 WebGL 2 的桌面浏览器。类型检查和生产构建用于确认页面与三维模块可以一起编译发布；单元测试覆盖路径、图层、剖切和工况计算，浏览器脚本在运行页面上检查二维定位、剖切恢复、告警与视频定位、聚合成员、巡游入场和各模块默认图层。"
+)
+h2("4.2总览监测与资产检视")
+body(
+    "总览在同一场景中给出隧道形态，并并列告警、交通、设备、工单和公众服务信息。告警和重点监控可以直接定位到对应点位，见图 6。"
+    "智慧监测把气体、照度、通风和结构沉降放在环境与结构图层上，用曲线表达环境量，见图 7。"
+    "智能交通侧重视频点位、区段运行状态和诱导信息；智慧养护侧重病害、维修工单和结构健康；数字服务侧重公众反馈与预警发布。这些页面进入时切换默认图层，定位仍走同一套点位标识。"
+)
+figure("fig-overview.png", "总览页面中的施工模型与运维信息")
+figure("fig-monitoring.png", "智慧监测中的环境与照明信息")
+h2("4.3数字应急与工况推演")
+body(
+    "数字应急将火灾疏散、积水排涝、交通事故和日常巡检组织为分步推演。每步包含说明、持续时间和沿路线的位置，遥测数值在步骤内按进度插值，并给出联动设备状态。"
+    "推演界面与上方三维场景同步：可跳转步骤、调整速度，并联动内部巡游。竣工段同时表达风机叶轮转动和气流方向，通风模式分为日常通风、火灾排烟和停机，负荷可调。运行画面见图 8。"
+)
+figure("fig-emergency.png", "数字应急工况推演")
+h2("4.4运行效果")
+body(
+    "总览把隧道形态和告警、设备、工单放在同一视野；剖切面板与模型同屏，可按轴向查看内部；巡游进入竣工段车道，并提供层切换和设备检索；应急页面把工况步骤、遥测和三维场景放在一起；资产页用目录树对照模型；监测页用曲线表达环境量。"
+    "共享场景因此可以承载不同业务的定位和检视。对象标识、图层恢复和工况插值保持独立，模型或页面调整时可以分别核查。"
+)
+
+h1("5.总结与展望")
+h2("5.1总结")
+body(
+    "本文给出了两湖隧道（南湖段）智能运维管理平台的设计与实现。平台以 Cesium 场景统一施工模型与局部竣工模型，通过设备目录、屏幕空间聚合、跨模型剖切、路面采样巡游、告警定位和应急工况推演，把运维信息落到可检视的空间位置。"
+    "表现层、场景协调层、领域功能层和数据资源层的划分，使相机、剖切、巡游和工况可以随模型和页面一起维护。七个业务模块验证了共享场景按默认图层组织信息的方式。"
+)
+h2("5.2展望")
+body("平台已经把模型、设备、事件和工况组织在同一空间入口中。后续工作沿这个入口继续扩展：")
+lead("数据持续汇入：", "按现有点位标识接入现场监测、视频和工单记录，使曲线、画面和空间位置保持同一对象。")
+lead("模型更新核对：", "在施工或竣工模型更新后，自动核对设备目录、图标位置和巡游采样路线。")
+lead("过程记录：", "围绕查找设备、确认告警和完成一次应急推演，记录操作时间与完成情况。")
+lead("部署保障：", "在部署环境中补充身份权限、传输保护和运行监测，并继续沿用当前的对象标识和场景状态恢复方式。")
+
+p = add_p(first=560, line=480, rule="exact")
+run(p, "参考文献", 14, bold=True)
+for ref in (
+    "[1] 吴志强，甘惟，臧伟，等. 城市智能模型（CIM）的概念及发展[J]. 城市规划，2021，45（4）.",
+    "[2] ISO. ISO 19650-1:2018 Organization and digitization of information about buildings and civil engineering works, including building information modelling (BIM) — Information management using building information modelling — Part 1: Concepts and principles[S]. Geneva: ISO, 2018.",
+    "[3] Open Geospatial Consortium. OGC 3D Tiles Specification, Version 1.1[EB/OL]. https://docs.ogc.org/cs/22-025r4/22-025r4.html.",
+    "[4] Cesium. CesiumJS Documentation[EB/OL]. https://cesium.com/learn/cesiumjs/ref-doc/.",
+    "[5] Vue.js. Vue.js Guide[EB/OL]. https://vuejs.org/guide/introduction.html.",
+    "[6] 中华人民共和国住房和城乡建设部. 建筑信息模型应用统一标准：GB/T 51212—2016[S]. 北京：中国建筑工业出版社，2016.",
 ):
-    para(text, center=True)
-para(
-    '说明：正文描述可运行浏览器前端原型；工单、告警、视频等为演示数据，不代表生产系统已上线。',
-    center=True,
-)
-d.add_page_break()
+    body(ref)
 
-# ── 摘要 ──
-heading('摘要', 1)
-para(
-    '城市隧道运维涉及多专业设备与多源信息，空间位置与业务台账若缺乏统一可视化入口，'
-    '值班与检修人员难以在秒级内回答“设备在哪、告警对应哪一段、模型里能否直接看见”。'
-    '针对两湖隧道（南湖段）智能运维管理平台的建设需求，本文设计并实现一套基于 Web 的三维运维可视化原型：'
-    '以 Vue 3、TypeScript 与 Vite 构建七类业务视图，以 Cesium 承载全局施工 BIM 与局部竣工 BIM，'
-    '在同一三维场景中完成图层编排、设备定位、剖切检视、基于路面几何的内部巡游、'
-    '告警—点位联动及资产资料与模型构件的统一资料面板。'
-)
-para(
-    '系统在工程上采用“表现层—场景协调层—领域功能层—数据资源层”的分层组织；'
-    '在算法与交互上重点处理跨 Tileset 坐标系的剖切平面换算、屏幕空间聚合与近景图标滞回、'
-    '从道路构件上表面采样的弧长推进巡游，以及数字应急模块中脚本化孪生工况推演与竣工段风机/气流可视化。'
-    '仓库配备 28 项 Node 单元测试与 29 项浏览器场景回归脚本，覆盖路径、图层、剖切、聚合与巡游等关键行为。'
-)
-para(
-    '需要强调的是：本文成果限于前端原型的交互可行性与工程可维护性论证；'
-    '未接入实时物联网、生产级鉴权与视频流，亦未开展现场用户实验或运营效益量化。'
-    '文中截图除仓库随附底图外，其余界面图以占位框标示，供定稿前补入真实运行截图。',
-)
-para('关键词：隧道智能运维；建筑信息模型；Cesium；三维可视化；设备定位；数字孪生推演', bold=True)
-heading('Abstract', 1)
-para(
-    'This thesis documents the design and implementation of a browser-based intelligent '
-    'operation and maintenance prototype for the Nanhu section of the Lianghu Tunnel. '
-    'Vue 3, TypeScript, and Vite implement seven operational views around a shared Cesium scene '
-    'that co-displays construction and partial as-built BIM tilesets. Core capabilities include '
-    'cross-tileset sectioning, screen-space marker clustering with hysteresis, arc-length-based '
-    'interior roaming sampled from roadway geometry, alert-to-location navigation, unified asset '
-    'inspection panels, and scripted emergency twin scenarios with ventilation-related visual effects. '
-    'Automated unit and browser smoke tests guard regressions in pathing, layers, materials, and interactions. '
-    'The repository remains a front-end prototype with demonstration business data rather than a production O&M backend.',
-)
-para(
-    'Keywords: tunnel O&M; BIM; Cesium; 3D visualization; equipment localization; twin simulation',
-    bold=True,
-)
-d.add_page_break()
+footer = sec.footer.paragraphs[0]
+footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+_indent(footer, 0)
+_spacing(footer, before=0, after=0, line=240, rule="auto")
+run_begin = footer.add_run()
+paint(run_begin, 9, bold=False)
+fld_begin = OxmlElement("w:fldChar")
+fld_begin.set(qn("w:fldCharType"), "begin")
+run_begin._r.append(fld_begin)
+run_instr = footer.add_run()
+paint(run_instr, 9, bold=False)
+instr = OxmlElement("w:instrText")
+instr.set(qn("xml:space"), "preserve")
+instr.text = " PAGE "
+run_instr._r.append(instr)
+run_end = footer.add_run()
+paint(run_end, 9, bold=False)
+fld_end = OxmlElement("w:fldChar")
+fld_end.set(qn("w:fldCharType"), "end")
+run_end._r.append(fld_end)
 
-heading('目录', 1)
-for x in (
-    '1 绪论',
-    '2 需求分析与总体设计',
-    '3 系统关键技术与实现',
-    '4 交互设计、算法与孪生推演',
-    '5 测试验证与结果讨论',
-    '6 局限、风险与后续工作',
-    '7 结论',
-    '参考文献',
-    '附录A 主要程序模块索引',
-    '附录B 待补充截图清单',
-):
-    para(x, indent=False)
-d.add_page_break()
-
-# ── 1 绪论 ──
-heading('1 绪论', 1)
-heading('1.1 研究背景与意义', 2)
-para(
-    '长大隧道机电与结构监测对象分布广、专业杂，传统以表格、平面图或分散视频监控为主的运维界面，'
-    '难以把“事件—区段—构件”三者在同一空间上下文中呈现。建筑信息模型（BIM）以构件粒度保存几何与属性，'
-    '三维地球/场景引擎（如 Cesium）则提供多尺度浏览、拾取与相机叙事能力。'
-    '将二者结合用于运维检视，可降低“找设备、对位置”的认知成本，为值班演示、方案沟通和验收走查提供直观入口。'
-)
-para(
-    '需要区分的是：三维前端本身并不自动构成完整智慧运维系统；'
-    '数据治理、告警规则、工单闭环与安全审计仍依赖后端与现场流程。'
-    '因此本课题选取“可运行原型”路线，在真实 BIM 几何约束下验证交互与架构，'
-    '并对演示型业务数据明确标注边界，避免将界面效果外推为生产成效。',
-)
-n = next_fig()
-p = d.add_paragraph()
-p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-p.add_run().add_picture(str(ROOT / 'public/scene-map.jpg'), width=Inches(6.0))
-figcaption(f'图{n} 项目随附隧道区域示意底图（public/scene-map.jpg；正式论文中可替换为现场或正射影像截图并注明来源）')
-
-heading('1.2 国内外相关研究与实践', 2)
-para(
-    '在交通基础设施信息化方向，国内外工程实践普遍经历从二维 GIS 资产台账、到 BIM+GIS 融合、'
-    '再到运维期数字孪生演示的发展路径。学术研究多关注模型轻量发布（3D Tiles）、'
-    '多源坐标统一、语义化设备关联及大屏可视化的人机因素；'
-    '行业规范方面，ISO 19650 系列强调信息管理角色与交付边界，'
-    '对运维阶段“模型—台账—现场”一致性提出流程要求。'
-)
-para(
-    'Cesium 与 3D Tiles 已成为 Web 端大规模几何流式加载的事实标准之一；'
-    'Vue 3 组合式 API 有利于将场景逻辑沉淀为可测 composable。'
-    '现有公开案例常侧重展示，而对剖切跨原点、真实构件拾取、聚合与巡游路径校准等工程细节着墨较少。'
-    '本文以开源可复现仓库为对象，把这些细节作为设计与验证重点。',
-)
-
-heading('1.3 研究目标、内容与范围', 2)
-para(
-    '目标：实现可浏览、可检索、可定位、可剖切、可巡游的隧道三维运维前端，'
-    '并以多业务模块验证“单场景、多视图”组织方式。'
-    '内容：需求与架构、BIM 场景与设备目录、剖切与材质策略、巡游与告警联动、'
-    '数字应急孪生推演、测试与局限讨论。'
-    '范围：仅包含仓库内前端、随附模型与自动化脚本；不含物联网接入、算法精度评估与经济效益量化。',
-)
-
-heading('1.4 研究方法与技术路线', 2)
-para(
-    '采用“需求梳理—模块化设计—原型实现—自动化验证”的螺旋路径：'
-    '从交付说明与源码归纳功能与非功能需求；划分场景 composable 与配置层；'
-    '以单元测试锁定纯函数与路径逻辑，以 Playwright 场景脚本锁定浏览器交互；'
-    '论文叙述与代码提交同步，避免文档与实现脱节。',
-)
-placeholder_figure(
-    '系统技术路线示意：需求 → 架构分层 → Cesium 场景 → 七模块联调 → 测试',
-    '技术路线总览（建议用 PPT/ProcessOn 导出流程图替换本占位）',
-)
-
-# ── 2 需求与总体设计 ──
-heading('2 需求分析与总体设计', 1)
-heading('2.1 功能性需求', 2)
-table(
-    ['编号', '需求描述', '验收口径（原型）'],
-    [
-        ('F1', '施工/竣工模型同屏展示与快捷切换', '默认施工半透明全局示意，可切换竣工段'),
-        ('F2', '138 个可独立定位竣工构件图标', '目录来自 scenetree，禁止虚构合并灯具坐标'),
-        ('F3', '图层按业务模块默认开关', 'scenePoints 配置，换页可恢复默认'),
-        ('F4', '剖切 X/Y/水平Z，可选目标模型', '世界平面换算至各 Tileset 局部系'),
-        ('F5', '内部巡游沿真实路面采样', '27 点/层，弧长时间推进'),
-        ('F6', '告警/监控联动定位', '稳定 pointId，图层关闭时自动开启'),
-        ('F7', '孪生应急工况推演', '四工况脚本 + 场景 HUD + 巡游联动'),
-        ('F8', '资产列表与场景构件资料同步', '同一资料面板，名称映射'),
-    ],
-)
-
-heading('2.2 非功能性需求', 2)
-table(
-    ['类别', '要求', '实现要点'],
-    [
-        ('性能', '首屏尽快可交互', '延后倾斜摄影、限制并发瓦片请求、按需渲染'),
-        ('可用性', '键盘与减动效', 'resize 把手可键盘操作；prefers-reduced-motion'),
-        ('可维护', '逻辑可单测', '路径/剖切/孪生脚本纯函数化'),
-        ('诚实标注', '演示数据边界', '模拟事件、模拟视频画面明确文案'),
-    ],
-)
-
-heading('2.3 系统总体架构', 2)
-diagram_caption(
-    '系统逻辑分层',
-    [
-        ('表现层', 'Vue 路由页面、业务卡片、TwinSimHud、VideoPreviewDialog'),
-        ('场景协调层', 'useCesiumTunnelMap：Viewer 生命周期、模型、相机、拾取'),
-        ('领域功能层', '标记聚合、剖切、巡游、材质、孪生仿真、告警轮播'),
-        ('数据资源层', 'Tileset/GLB、scenePoints、alerts、twinScenarios、静态媒体'),
-    ],
-    '各层通过稳定 ID 与一次性导航请求协作，避免页面切换重复创建场景。',
-)
-placeholder_figure(
-    '总览页（#/overview）：三维场景 + 左右业务卡片 + 底部 Dock',
-    '总览大屏运行效果',
-    asset=None,
-)
-
-heading('2.4 功能模块与场景关系', 2)
-table(
-    ['模块', '路由', '默认图层侧重', '场景联动'],
-    [
-        ('总览', '#/overview', '全部', '告警、监控定位'),
-        ('智能交通', '#/traffic', '环境、交通管控', '视频示例点位'),
-        ('智慧养护', '#/maintenance', '环境、结构监测', '病害点'),
-        ('智慧监测', '#/monitoring', '环境、环控、结构', '监测点曲线'),
-        ('数字应急', '#/emergency', '环境、环控、机电', '孪生推演、巡游'),
-        ('数字服务', '#/service', '环境', '投诉点'),
-        ('资产资料中心', '#/asset', '全部', '树—场景—资料面板'),
-    ],
-)
-
-# ── 3 关键技术 ──
-heading('3 系统关键技术与实现', 1)
-heading('3.1 技术选型', 2)
-table(
-    ['技术', '版本/说明', '选用理由'],
-    [
-        ('Vue 3 + TS', '3.4 / 5.4', '组合式 API 便于抽取 useXxx 场景逻辑'),
-        ('Vite', '5.x', '快速开发与按需打包'),
-        ('Cesium', '1.146', '3D Tiles、拾取、相机与后期处理'),
-        ('Element Plus', '2.7', '大屏表单与开关组件'),
-        ('ECharts', '5.5', '业务页统计图'),
-        ('tsx test + Playwright', '—', '单元与浏览器分层验证'),
-    ],
-)
-
-heading('3.2 BIM 发布与坐标处理', 2)
-para(
-    '全局施工模型与局部竣工模型以 3D Tiles（含 GLB 瓦片）形式部署于 public/三维数据。'
-    '二者局部原点不一致，剖切与拾取必须在世界坐标语义下统一，再乘以各 tileset.root.computedTransform 的逆变换。'
-    '施工模型默认采用半透明 CustomShader 提示空间关系；竣工路面默认保留 GLB 原始 PBR，'
-    '仅在用户显式开启“路面透视”时调整透明度，防止施工透明策略污染道路材质。',
-)
-placeholder_figure(
-    '剖切工具：青色切割面 + 竣工段目标 + 扫入动画',
-    '模型剖切效果',
-)
-
-heading('3.3 设备目录、聚合与远近可见性', 2)
-para(
-    'useSceneMarkers 从竣工 scenetree 解析可独立定位构件（当前 138 项），'
-    '图标位置取包围球中心经变换后的世界坐标。远景按屏幕像素距离聚合（阈值约 46px），'
-    '点击聚合数字放大并列出成员；告警与当前选中设备处于优先层，不参与普通聚合。'
-    '进入设备约 45m 内隐藏 BIM 图标，退至 65m 外恢复，滞回抑制临界闪烁；'
-    '内部巡游与二维模式隐藏外部图标，聚焦模型本体。',
-)
-placeholder_figure(
-    '聚合数字展开列表 + 设备高亮（暖橙色 Fresnel）',
-    '点位聚合与构件定位',
-)
-
-heading('3.4 基于路面几何的内部巡游', 2)
-para(
-    '巡游路线非示意折线，而从 NoLod_7.glb 中道路构件（malu）上表面采样，'
-    '上下层各 27 点，经 calibrate-roaming-route 脚本写回 partialRoamingRoutes.ts。'
-    '播放按弧长与时间推进；支持末端入场、反向、速度档位与设备检索。'
-    '退出巡游恢复剖切、图层与侧栏状态，并在页面卸载时注销监听与相机回调，防止 WebGL 资源泄漏。',
-)
-placeholder_figure(
-    'ModelRoamingPanel：层切换、进度、设备搜索',
-    '竣工模型内部巡游界面',
-)
-
-heading('3.5 数字应急孪生推演与通风可视化', 2)
-para(
-    '数字应急模块将“孪生 VR”定义为页面内脚本化推演，而非头显程序。'
-    'twinScenarios.ts 以纯数据描述火灾疏散、积水排涝、交通事故、日常巡检四类工况：'
-    '每类包含步骤时长、路线 progress 锚点、遥测插值函数与联动设备表。'
-    'useTwinSimulation 驱动步骤播放、速率与视角模式；TwinSimHud 叠加于 TunnelScene。'
-    'usePartialTunnelFx 在竣工段实现风机叶轮绕真实轴心旋转、射流羽流与车道风向，'
-    '日常/排烟/停机模式可由 UI 或孪生脚本 override。工况切换可联动上方 Cesium 内部巡游路径。',
-)
-placeholder_figure(
-    'Emergency 页：工况卡片 + 步骤轴 +「联动三维巡游」',
-    '数字应急孪生推演面板',
-)
-
-heading('3.6 首屏加载与渲染策略', 2)
-para(
-    '总览页将 Cesium 与 ECharts 延后挂载；场景优先加载竣工/施工 Tileset 并飞向隧道，'
-    '倾斜摄影（若存在）延迟约 0.7s 且限制每服务器并发请求。'
-    '首屏关闭 MSAA/SSAO 并启用 requestRenderMode，减少空转帧消耗。'
-    '该策略以可接受的首屏交互时延换取完整功能，生产部署仍需按显卡与模型体量实测调参。',
-)
-
-heading('3.7 业务演示数据与真实模型边界', 2)
-para(
-    'alerts.ts 中五条模拟告警使用稳定 pointId，与横幅、面板、地图标记一致。'
-    '视频与 GIF 为示例媒体，窗口标注“模拟画面”。'
-    '资产资料中心对未建档构件展示 BIM 属性而非虚构台账。'
-    '论文与界面均不得将演示数字表述为实时生产指标。',
-)
-
-# ── 4 交互与算法 ──
-heading('4 交互设计、算法与孪生推演', 1)
-heading('4.1 剖切状态机', 2)
-para(
-    '剖切启用时可选择目标（全部/竣工/施工），轴系切换带扫入动画。'
-    '二维视图与巡游中冻结剖切平面更新；返回三维恢复；destroy 时释放 clipping collection。'
-)
-
-heading('4.2 聚合与定位算法要点', 2)
-para(
-    '聚合在屏幕空间完成，避免地理距离在不同纬度下的失真；'
-    '点击成员后临时解散局部聚合并二次拉近，保证“看见模型”而不仅是看见图标。'
-    'sceneFocusRequest 通过 consume 模式传递一次性定位命令，防止路由切换重放旧焦点。',
-)
-
-heading('4.3 孪生遥测插值', 2)
-para(
-    'piecewise(segments, step, k) 在每个推演步骤内对遥测标量线性插值，'
-    'level() 按阈值映射 ok/warn/alarm，用于 HUD 进度条与设备列表配色。'
-    '该设计便于 twinFx.test.ts 对纯函数回归，而不依赖完整 Cesium 运行时。',
-)
-
-diagram_caption(
-    '典型空间交互链路',
-    [
-        ('输入', '告警/设备/聚合成员/检索框'),
-        ('解析', 'pointId 或 BIM 目录项'),
-        ('协调', '图层、二维/巡游/孪生状态'),
-        ('反馈', '相机、高亮、弹窗、聚合展开'),
-    ],
-    '强调对象身份一致性，而非孤立动画。',
-)
-
-# ── 5 测试 ──
-heading('5 测试验证与结果讨论', 1)
-heading('5.1 测试分层', 2)
-table(
-    ['层次', '命令', '覆盖范围'],
-    [
-        ('静态检查', 'npm run typecheck', 'Vue/TS 类型'),
-        ('单元测试', 'npm test（28 项）', '路径、图层、材质、剖切、孪生函数等'),
-        ('构建', 'npm run build', '生产包体积与编译'),
-        ('场景回归', 'npm run test:scene（29 项）', '浏览器真实交互，报告见 scene-interactions-qa.md'),
-    ],
-)
-para(
-    '本文不捏造未在本次环境执行的通过率数据。复现时应在 README 所述 Node 22、Chrome/WebGL2 环境下'
-    '保存终端输出与 .build-check 截图，以支撑论文“可复现”表述。',
-)
-placeholder_figure(
-    '终端中 npm test / test:scene 通过摘要',
-    '自动化测试结果摘录',
-)
-
-heading('5.2 结果讨论', 2)
-para(
-    '结合源码与测试用例可确认：共享场景支撑七模块切换；剖切跨坐标系行为有单测约束；'
-    '巡游路径与孪生脚本可独立验证；告警定位在图层关闭时能自动开启目标分组。'
-    '上述结论属于实现正确性范畴；用户效率、误操作率与现场网络条件下的帧率仍需专门实验。',
-)
-
-# ── 6 局限 ──
-heading('6 局限、风险与后续工作', 1)
-heading('6.1 当前局限', 2)
-para(
-    '（1）无生产后端、鉴权与审计；（2）业务数据静态；（3）BIM 为局部竣工段；'
-    '（4）倾斜摄影与天地图依赖外部部署；（5）孪生推演为教育演示脚本，非物理仿真；'
-    '（6）论文界面截图尚未全部替换占位图。',
-)
-
-heading('6.2 后续工作', 2)
-para(
-    '接入经授权的设备台账与告警/视频 API；建立模型版本—目录自动 diff；'
-    '对孪生脚本与 CFD/通风仿真的耦合方式进行可行性研究；'
-    '开展任务导向可用性测试并记录定位耗时与错误恢复路径；'
-    '生产化部署补充 HTTPS、权限、限流与监控。',
-)
-placeholder_figure(
-    '资产资料中心：左侧树 + 右侧资料面板 + 场景高亮',
-    '资产资料与三维联动',
-)
-
-# ── 7 结论 ──
-heading('7 结论', 1)
-para(
-    '本文围绕两湖隧道（南湖段）智能运维管理平台，完成了从需求、分层架构到关键交互的实现说明，'
-    '并在真实 BIM 约束下验证了设备目录定位、跨模型剖切、路面采样巡游、告警联动、'
-    '孪生工况推演与通风可视化等能力。配套测试为可复现验证提供了路径。'
-    '成果表明：以 Cesium+BIM 构建隧道运维三维入口在工程上可行，但生产价值仍取决于数据接入与流程闭环。'
-    '定稿前需将占位截图替换为真实运行图，并按学校格式补全封面、致谢与原创性声明。',
-)
-
-heading('参考文献', 1)
-refs = [
-    '[1] Cesium. CesiumJS Documentation[EB/OL]. https://cesium.com/learn/cesiumjs/ref-doc/（2026-11-12）.',
-    '[2] Open Geospatial Consortium. OGC 3D Tiles Specification, Version 1.1[EB/OL]. https://docs.ogc.org/cs/22-025r4/22-025r4.html（2026-11-12）.',
-    '[3] Vue.js. Vue.js Guide[EB/OL]. https://vuejs.org/guide/introduction.html（2026-11-12）.',
-    '[4] ISO. ISO 19650-1:2018. Information management using BIM[S]. Geneva: ISO, 2018.',
-    '[5] W3C. Web Content Accessibility Guidelines (WCAG) 2.2[EB/OL]. https://www.w3.org/TR/WCAG22/（2026-11-12）.',
-    '[6] 王建民, 等. 建筑信息模型（BIM）技术应用现状与发展趋势[J]. 土木建筑工程信息技术, 相关综述文献—提交时请按学校要求补全卷期页.',
-    '[7] Wang Ying. lianghu-yunwei repository[CP/OL]. GitHub, 2026. https://github.com/WangYing156/lianghu-yunwei（2026-11-12）.',
-]
-for x in refs:
-    para(x, indent=False)
-
-d.add_page_break()
-heading('附录A 主要程序模块索引', 1)
-table(
-    ['路径', '职责'],
-    [
-        ('src/components/TunnelScene.vue', '场景容器、Dock、孪生 HUD 挂载'),
-        ('src/composables/useCesiumTunnelMap.ts', '模型加载、相机、拾取'),
-        ('src/composables/useSceneMarkers.ts', '构件图标与聚合'),
-        ('src/composables/useModelSection.ts', '剖切'),
-        ('src/composables/useModelRoaming.ts', '巡游'),
-        ('src/composables/useTwinSimulation.ts', '孪生推演状态机'),
-        ('src/composables/usePartialTunnelFx.ts', '风机与气流特效'),
-        ('src/config/twinScenarios.ts', '工况脚本数据'),
-        ('tests/*.test.ts', '单元测试'),
-        ('scripts/smoke-scene.mjs', '浏览器场景回归'),
-    ],
-)
-
-heading('附录B 待补充截图清单', 1)
-table(
-    ['图号', '建议页面/操作', '文件名建议'],
-    [
-        ('总览', '#/overview 默认视角', 'fig-overview.png'),
-        ('剖切', '竣工段 Y 轴剖切', 'fig-section.png'),
-        ('聚合', '远景聚合展开', 'fig-cluster.png'),
-        ('巡游', '下层巡游中', 'fig-roaming.png'),
-        ('孪生', '火灾工况步骤 2', 'fig-twin-fire.png'),
-        ('资产', '风机资料面板', 'fig-asset.png'),
-        ('测试', 'npm test 通过', 'fig-test.png'),
-    ],
-)
-para(
-    '将图片置于 docs/论文/images/ 后，可在 placeholder_figure(..., asset="docs/论文/images/xxx.png") 中引用并重新运行本脚本。',
-)
-
-heading('写作与诚信说明', 1)
-para(
-    '正文依据本仓库源码与交付文档归纳，未抄袭外部论文段落；'
-    '功能描述与测试数字以 README 与 tests 为准；'
-    '查重率取决于检测系统与学校规则，提交前请按学院模板统一页眉、行距与参考文献格式。',
-)
-
-for s in d.sections:
-    h = s.header.paragraphs[0]
-    h.text = '两湖隧道（南湖段）智能运维管理平台｜设计与实现'
-    h.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    f = s.footer.paragraphs[0]
-    f.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    fld = OxmlElement('w:fldSimple')
-    fld.set(qn('w:instr'), 'PAGE')
-    f._p.append(fld)
+header = sec.header.paragraphs[0]
+header.alignment = WD_ALIGN_PARAGRAPH.CENTER
+_indent(header, 0)
 
 d.save(OUT)
-print(f'Wrote {OUT}')
+print(OUT)
