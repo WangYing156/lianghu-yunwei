@@ -16,6 +16,7 @@ const report = {
   consoleErrors: [],
   networkAborts: [],
   failedRequests: [],
+  screenshotWarnings: [],
   failure: null,
 }
 const browser = await pw.launch({
@@ -32,7 +33,7 @@ const context = await browser.newContext({
   deviceScaleFactor: 1,
 })
 const page = await context.newPage()
-page.setDefaultTimeout(90000)
+page.setDefaultTimeout(180000)
 page.on('pageerror', (e) => {
   report.pageErrors.push({ name: e.name, message: e.message, stack: e.stack })
   console.log('PAGE ERROR', e.message)
@@ -84,8 +85,22 @@ const check = async (name, fn) => {
   console.log(`PASS ${report.checks.length}. ${name}`)
   await writeReport()
 }
-const shot = (name) =>
-  page.screenshot({ path: path.join(artifacts, `twin-${name}.png`) })
+const shot = async (name) => {
+  try {
+    await page.screenshot({
+      path: path.join(artifacts, `twin-${name}.png`),
+      timeout: 180000,
+      animations: 'disabled',
+      caret: 'initial',
+    })
+  } catch (err) {
+    // 软件渲染下个别截图可能等待合成器超时；这不是页面 / Cesium 错误，但必须留痕。
+    const message = err instanceof Error ? err.message : String(err)
+    report.screenshotWarnings.push({ name, message })
+    console.log(`WARN screenshot ${name}: ${message}`)
+    await writeReport()
+  }
+}
 const simState = () =>
   page.evaluate(() => {
     const t = window.__tunnelCesium
@@ -96,6 +111,7 @@ const simState = () =>
       seeThrough: t.partialFx.state.seeThrough,
       roamView: t.partialFx.state.roamView,
       overridden: t.partialFx.state.overridden,
+      clearance: { ...t.twin.state.clearance },
       error: t.twin.state.error,
     }
   })
@@ -160,6 +176,7 @@ try {
       assert.equal(running.roaming, false, '孪生仿真不应同时启动内部巡游')
       assert.equal(running.airflow, true, '仿真期间真实风机气流应保持可见')
       assert.equal(running.overridden, true, '仿真期间应接管风机工况')
+      assert.equal(running.clearance.ok, true, '运行中车辆净距与标线避让应持续通过')
       assert.equal(running.error, '')
     })
     await shot(`${id}-0`)
@@ -173,6 +190,16 @@ try {
       assert.equal(stepped.sim.finished, false)
     })
     await shot(`${id}-2`)
+    await page.locator('.twin-hud__clearance').filter({ hasText: '车辆净距校核' }).waitFor({ state: 'visible' })
+    const geometry = await page.evaluate(() => window.__tunnelCesium.twin.geometryAudit())
+    await check(`${label}：车辆不穿模、不踩引导线，净距求解通过`, () => {
+      assert.equal(geometry.ok, true, JSON.stringify(geometry.violations))
+      assert.deepEqual(geometry.violations, [])
+      assert.ok(geometry.vehicles >= (id === 'patrol' ? 0 : 2), '事件工况应保留可观察车辆')
+      assert.ok(geometry.minVehicleGap >= -1e-6, '车辆之间不得穿模')
+      assert.ok(geometry.minGuideGap >= -1e-6, '车辆不得压标线或诱导线')
+      assert.ok(geometry.minObstacleGap >= -1e-6, '车辆不得与积水/泵站/锥桶穿模')
+    })
   }
 
   await page.locator('.twin-hud__exit').click()

@@ -107,6 +107,15 @@
           <span>{{ d.name }}</span><b>{{ d.value }}</b>
         </div>
       </div>
+      <div
+        v-if="state.clearance"
+        class="twin-hud__clearance"
+        :class="state.clearance.ok ? 'ok' : 'bad'"
+        title="每帧对车辆包络、车道标线、诱导线与静态设施求解净距；冲突车辆自动隐藏"
+      >
+        <span>车辆净距校核</span><b>{{ state.clearance.ok ? '通过' : '已避让' }}</b>
+        <small>{{ clearanceText }}</small>
+      </div>
     </section>
 
     <div
@@ -244,6 +253,14 @@ const views = computed<{ id: TwinView; label: string; tip: string }[]>(() => {
 const viewLabel = computed(
   () => views.value.find((v) => v.id === props.state.view)?.label ?? '事件近景',
 )
+
+const clearanceText = computed(() => {
+  const c = props.state.clearance
+  if (!c || !c.vehicles) return '本工况无车辆 · 保持车道与设施净距'
+  const gap = Math.min(c.minVehicleGap, c.minGuideGap, c.minObstacleGap)
+  const gapText = gap >= 99 ? '—' : `${Math.max(0, gap).toFixed(2)}m`
+  return `${c.vehicles} 台 · 标线/诱导 ${c.guides} 处 · 设施 ${c.obstacles} 处 · 最小净距 ${gapText}`
+})
 </script>
 
 <style scoped lang="scss">
@@ -444,6 +461,35 @@ const viewLabel = computed(
     &.ok b { color: var(--hud-ok); }
     &.warn b { color: var(--hud-warn); }
     &.alarm b { color: var(--hud-alarm); }
+  }
+}
+.twin-hud__clearance {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(46, 230, 160, 0.32);
+  background: rgba(9, 38, 34, 0.5);
+  color: #a9ddc9;
+  span { font-size: 0.86em; }
+  b { font-size: 0.92em; color: var(--hud-ok); }
+  small {
+    grid-column: 1 / -1;
+    color: #80ab9d;
+    font-size: 0.76em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  &.bad {
+    border-color: rgba(255, 176, 58, 0.5);
+    background: rgba(54, 34, 8, 0.58);
+    color: #ffd7a0;
+    b { color: var(--hud-warn); }
+    small { color: #c9a878; }
   }
 }
 .twin-hud__toast {

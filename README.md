@@ -17,7 +17,7 @@ npm run dev
 
 ```bash
 npm run typecheck          # Vue / TypeScript 类型检查
-npm test                   # 路径、设备目录、图层/聚合/材质/剖切/告警、工况脚本与水面物理测试（40 项）
+npm test                   # 路径、设备目录、图层/聚合/材质/剖切/告警、工况脚本、水面物理与车辆净距测试（46 项）
 npm run build              # 生产构建，输出 dist/
 ```
 
@@ -85,15 +85,15 @@ npm run calibrate:roaming
 
 ## 数字应急 · 孪生 VR 工况推演
 
-“数字应急 → 四维工况推演”在**同一个 Cesium 主视图**内运行，不是另开的页内示意图或页面联动巡游按钮。四个脚本（火灾疏散 / 积水排涝 / 交通事故 / 日常巡检）共用真实竣工 BIM、上下层路面采样、16 台竣工风机模型及其轴向：脚本步骤统一驱动相机、告警点、遥测读数、设备状态、风机转速、气流方向、情报板、疏散/绕行引导与特效；三维、第一人称和 Cesium 立体分屏可随时切换，切步会暂停以便检视，播放速率可以调整。
+“数字应急 → 四维工况推演”在**同一个 Cesium 主视图**内运行，不是另开的页内示意图或页面联动巡游按钮。四个脚本（火灾疏散 / 积水排涝 / 交通事故 / 日常巡检）共用真实竣工 BIM、上下层路面采样、16 台竣工风机模型及其轴向：脚本步骤统一驱动相机、告警点、遥测读数、设备状态、风机转速、气流方向、情报板、疏散/绕行引导与特效；消防车 / 疏散车流、泵站 / 绕行车流、事故救援 / 清障 / 过车按阶段分道推演，逐帧求解车辆、标线、诱导线与静态设施净距；三维、第一人称和 Cesium 立体分屏可随时切换，切步会暂停以便检视，播放速率可以调整。
 
 - 数据是**脚本工况推演值，非实时测点**；页面、场景 HUD 与交付文档都明确标注该边界。风机覆写和情报板只是三维推演状态，不代表下发设备指令或接入实时 IoT。
-- 积水水面是水平面，与真实路面纵坡求交得到岸线；下坡侧能形成连续淹没区，水位回落时范围同步收缩。水位越高，抽排流量、导流与情报板阶段同步变化。
-- 火灾排烟计划贯穿报警、疏散、复盘三个阶段：下层风机提速排风、上层保持基础送风，烟气随气流方向移动；复盘后段恢复常规通风，遥测、设备表、烟气与标志同步回落。
+- 积水水面是水平面，与真实路面纵坡求交得到岸线；下坡侧能形成连续淹没区，水位回落时范围同步收缩。泵站叶轮随抽排流量旋转，车辆沿黄色诱导线右侧干燥车道绕行，恢复阶段双车道放行；车辆包络不进入水面、泵体、锥桶或标线。
+- 火灾排烟计划贯穿报警、疏散、复盘三个阶段：下层风机提速排风、上层保持基础送风，烟气随气流方向移动；消防车经中间车道进场，社会车辆在右车道保持车距分道撤离，不越绿色诱导线；复盘后段恢复常规通风，遥测、设备表、烟气与标志同步回落。
 - 推演期间普通工具栏、复位、内部巡游、二维切换、图层/剖切等会干扰相机和材质的入口被锁定或安全退出；进入前保存、退出后恢复相机、图层、气流、透视、漫游、立体分屏与巡游状态。启动失败也会回滚，不会留下半激活态。
 - “立体分屏”是 Cesium 1.146 的 `Scene.useWebVR` Cardboard 双视图能力，仅在透视投影三维模式可用；**不是 WebXR 头显系统，也没有实时视频流**。
 
-相关源码在 `src/config/twinScenarios.ts`（脚本与数据边界）、`src/utils/simulationPhysics.ts`（水平水面/时长/第一人称进度）、`src/composables/useTwinSimulation.ts`（状态机与特效）、`src/components/TwinSimHud.vue`（场景 HUD）和 `src/composables/useCesiumTunnelMap.ts`（场景恢复钩子）。
+相关源码在 `src/config/twinScenarios.ts`（脚本与数据边界）、`src/utils/simulationPhysics.ts`（水平水面/时长/第一人称进度）、`src/utils/simulationClearance.ts`（车辆包络与逐帧净距求解）、`src/composables/useTwinSimulation.ts`（状态机与特效）、`src/components/TwinSimHud.vue`（场景 HUD / 净距校核）和 `src/composables/useCesiumTunnelMap.ts`（场景恢复钩子）。
 
 ## 动态告警展示
 
@@ -117,7 +117,7 @@ npm run calibrate:roaming
 
 ```bash
 npm run test:scene                         # 29 项场景交互回归
-npm run test:twin                          # 四类孪生工况进入 / 切步 / 退出恢复回归
+npm run test:twin                          # 四类孪生工况进入 / 切步 / 车辆净距 / 退出恢复回归
 # 或指定已有 Chromium，测试仅针对开发服务（使用 DEV 场景检查钩子）
 CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:scene
 CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:twin
@@ -125,7 +125,7 @@ CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:twin
 
 可用 `SCENE_URL` 覆盖开发服务地址。`SCENE_SMOKE_SOFTWARE=1` 仅在软件渲染验收时降低测试画布分辨率/FPS，不修改应用源码与生产配置。特殊沙箱可用 `CHROMIUM_ARGS` JSON 数组传递启动参数。
 
-`test:scene` 覆盖 **29 项真实浏览器交互**，包括二维重复/实际点击定位、剖切跨坐标系/模式恢复、告警和视频定位、聚合成员检视、真实设备近景/高亮、巡游末端入场/材质、六模块默认图层及 resize 键盘/指针操作。`test:twin` 检查 16 台风机动效、四类工况逐一切步暂停、真实气流不中断、退出后恢复进入前的气流开关且释放风机覆写。失败时非零退出；报告/截图写入 Git 忽略的 `.build-check/`。本次验收记录（含 2026-11-11 孪生工况推演补充）见 [`docs/scene-interactions-qa.md`](docs/scene-interactions-qa.md)。
+`test:scene` 覆盖 **29 项真实浏览器交互**，包括二维重复/实际点击定位、剖切跨坐标系/模式恢复、告警和视频定位、聚合成员检视、真实设备近景/高亮、巡游末端入场/材质、六模块默认图层及 resize 键盘/指针操作。`test:twin` 检查 16 台风机动效、四类工况逐一切步暂停、真实气流不中断、HUD 车辆净距校核与每帧无穿模/不压引导线、退出后恢复进入前的气流开关且释放风机覆写。失败时非零退出；报告/截图写入 Git 忽略的 `.build-check/`。本次验收记录（含 2026-11-11 孪生工况推演补充）见 [`docs/scene-interactions-qa.md`](docs/scene-interactions-qa.md)。
 
 ## 模型与部署资源
 
@@ -145,6 +145,7 @@ CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:twin
 | `src/composables/useModelRoaming.ts`                    | 末端入场巡游、设备检视与场景恢复         |
 | `src/composables/useTwinSimulation.ts` / `TwinSimHud.vue` | 四类工况状态机、真实 BIM 特效与场景 HUD |
 | `src/config/twinScenarios.ts` / `src/utils/simulationPhysics.ts` | 脚本推演数据、排烟计划、水平水面/进度换算 |
+| `src/utils/simulationClearance.ts` | 竣工标线、安全车道、车辆包络与逐帧净距求解 |
 | `src/utils/roamingPath.ts` / `modelEquipment.ts`        | 真实路径采样、设备解析及目录缓存         |
 | `src/utils/modelMaterials.ts` / `sceneCamera.ts`        | 原始道路材质策略与绝对二维定位窗口       |
 | `src/config/scenePoints.ts` / `alerts.ts`               | 共享目录、模块默认图层、稳定模拟告警     |

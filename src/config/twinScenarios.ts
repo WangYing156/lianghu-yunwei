@@ -1,6 +1,7 @@
 /**
  * 孪生 VR 仿真推演脚本：步骤、联动设备与随时间演化的推演曲线（纯数据 / 纯函数，便于单测）。
  * 空间锚点均取自局部竣工模型真实双层路面（PARTIAL_ROAMING_ROUTES），progress 为路线弧长比例。
+ * 消防车 / 疏散车流、泵站 / 绕行车流、事故处置 / 过车车流均按步骤分道推演，车位由净距求解器逐帧校核。
  *
  * 这里的所有读数都是工况脚本推演值，不是实时 IoT 测点；设备动作也是三维场景内的联动示意。
  */
@@ -97,15 +98,15 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
     id: 'fire',
     label: '火灾疏散',
     short: '火灾',
-    desc: '下层车道车辆起火：事故层射流风机纵向排烟、加压送风、疏散指示与应急广播联动，推演烟气蔓延与人员疏散；最后排烟回落常规通风。',
+    desc: '下层车道车辆起火：事故层射流风机纵向排烟、消防车经中间车道进场、社会车辆在右车道分道撤离，疏散指示与应急广播联动；最后清障并回落常规通风。',
     deck: 'lower',
     eventProgress: 0.46,
     hotspot: 'fan1',
     steps: [
-      { title: '火情确认与分区锁定', detail: '感温光栅报警，视频复核确认车辆起火，锁定火灾分区；烟气开始在拱顶聚集并双向扩散。', duration: 14 },
-      { title: '排烟模式切换', detail: '火点所在下层射流风机全速正转，加压送风口开启，纵向排烟把烟气压向下游，上游形成无烟区。', duration: 16 },
-      { title: '诱导 / 广播疏散指引', detail: '疏散指示灯沿上游方向流动点亮，应急广播循环播放，人员背离烟气向上游安全区疏散。', duration: 16 },
-      { title: '通道清障与复盘', detail: '明火扑灭，排烟持续后转常规通风，烟气消散；复盘疏散用时与烟控效果。', duration: 14 },
+      { title: '火情确认与分区锁定', detail: '感温光栅报警，视频复核确认车辆起火，锁定火灾分区；上游社会车辆停驶排队，烟气在拱顶双向扩散。', duration: 14 },
+      { title: '排烟与消防车进场', detail: '事故层风机全速正转，纵向排烟压向下游；消防车沿中间车道进场，不越过绿色疏散诱导线。', duration: 16 },
+      { title: '诱导 / 分道疏散', detail: '绿色诱导线与应急广播启动；人员走检修带，三辆社会车在右车道保持车距分道撤离。', duration: 16 },
+      { title: '通道清障与复盘', detail: '明火扑灭，消防车离场，车辆完成撤离；排烟转常规通风，烟气消散并复盘烟控效果。', duration: 14 },
     ],
     telemetry: (s, k) => {
       const temp = piecewise([[42, 86], [86, 118], [118, 92], [92, 31]], s, k)
@@ -128,6 +129,7 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
         { name: '加压送风口', value: ventOpen ? '开启' : '关闭', level: ventOpen ? 'warn' : 'ok' },
         { name: '疏散指示', value: guiding ? '上游诱导' : s === 3 ? '解除' : '待命', level: guiding ? 'warn' : 'ok' },
         { name: '应急广播', value: s === 2 ? '循环播放' : s === 3 && k < 0.55 ? '解除播报' : s === 3 ? '解除' : '待命', level: s === 2 ? 'alarm' : 'ok' },
+        { name: '消防车 / 疏散车流', value: s === 0 ? '待命 / 停驶排队' : s === 1 ? '消防车进场 / 车辆待避让' : s === 2 ? '驻车控火 / 分道撤离' : s === 3 && k < 0.6 ? '消防车离场 / 撤离完成' : '通道清空', level: s === 1 || s === 2 ? 'warn' : 'ok' },
       ]
     },
   },
@@ -135,15 +137,15 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
     id: 'flood',
     label: '积水排涝',
     short: '积水',
-    desc: '暴雨倒灌：水平水面按竣工路面真实纵坡求交，液位超红色阈值后联动排涝泵、车道封闭与绕行诱导，推演水位涨落和抽排全过程。',
+    desc: '暴雨倒灌：水平水面按竣工路面真实纵坡求交，泵站叶轮随抽排流量旋转，车辆沿黄色诱导线右侧干燥车道绕行；水位回落后双车道放行。',
     deck: 'lower',
     eventProgress: 0,
     hotspot: 'w2',
     steps: [
       { title: '液位红色预警', detail: '路面汇水流向洞口内低点，水平水面随液位上涨；第一步末达到 26.8cm 红色阈值。', duration: 14 },
-      { title: '泵站联动启动', detail: '排涝泵 P1/P2 启动并建立抽排流量，泵井受纳，水位上涨速度明显放缓。', duration: 14 },
-      { title: '交通诱导绕行', detail: '下层车道指示器转红叉封闭，情报板发布积水绕行，车辆沿诱导线改走上层。', duration: 14 },
-      { title: '水位回落确认', detail: '雨强减弱，抽排能力持续大于来水，液位回落至安全线以下，逐步恢复通行。', duration: 16 },
+      { title: '泵站联动启动', detail: '排涝泵 P1/P2 启动，叶轮随流量旋转，泵井受纳并经流线排出；水位上涨速度明显放缓。', duration: 14 },
+      { title: '交通诱导绕行', detail: '积水侧封闭，黄色诱导线与锥桶限定干燥绕行车道；车辆不压线、不涉水，依次改走上层。', duration: 14 },
+      { title: '水位回落与双车道放行', detail: '雨强减弱，抽排能力持续大于来水，液位回落至安全线以下，诱导设施撤除并逐步恢复通行。', duration: 16 },
     ],
     telemetry: (s, k) => {
       const lv = piecewise([[8, 26.8], [26.8, 29.4], [29.4, 23.5], [23.5, 3.2]], s, k)
@@ -166,6 +168,7 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
         { name: '排涝泵 P1/P2', value: starting ? '启动建压' : running ? `运行 ${flow.toFixed(0)}m³/h` : '待机', level: running ? 'warn' : 'ok' },
         { name: '下层车道指示器', value: guiding ? '全部封闭' : passing ? '逐步放行' : '正常', level: guiding ? 'alarm' : 'ok' },
         { name: '可变情报板', value: passing ? '积水消退 · 恢复通行' : guiding ? '积水绕行上层' : '正常', level: guiding ? 'warn' : 'ok' },
+        { name: '泵站叶轮 / 诱导锥桶', value: running ? `叶轮 ${flow.toFixed(0)}m³/h` : '叶轮停转', level: guiding ? 'warn' : running ? 'ok' : 'ok' },
       ]
     },
   },
@@ -173,15 +176,15 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
     id: 'accident',
     label: '交通事故',
     short: '事故',
-    desc: '上层车道两车追尾：联动车道指示器、可变情报板与视频复核，推演排队蔓延、救援进场、清障拖离与管制解除。',
+    desc: '上层车道两车追尾：左道锥桶渐变封闭，中间车道供救援车进场，右道社会车辆低速通过；清障车拖离事故车后管制解除。',
     deck: 'upper',
     eventProgress: 0.55,
     hotspot: 'm1',
     steps: [
       { title: '接警与视频复核', detail: '事件检测相机识别停驶车辆，视频复核为两车追尾，后方车辆开始排队。', duration: 12 },
       { title: '车道管制发布', detail: '事故车道指示器转红叉，摆放锥桶渐变封闭，相邻车道低速通行。', duration: 14 },
-      { title: '现场处置疏导', detail: '救援车经开放车道进场，警示灯开启，现场清障与伤员处置；后半段事故车拖离。', duration: 16 },
-      { title: '解除管制恢复', detail: '事故车辆离场，指示器恢复绿色箭头，排队车辆依次驶离。', duration: 14 },
+      { title: '现场处置与清障拖离', detail: '救援车经中间车道进场并驻车处置，社会车辆持续从右道通过；后半段清障车沿事故道拖离两车。', duration: 16 },
+      { title: '解除管制恢复', detail: '事故车辆与清障车离场，锥桶撤除，指示器恢复绿色箭头，排队车辆依次驶离。', duration: 14 },
     ],
     telemetry: (s, k) => {
       const queue = piecewise([[0, 180], [180, 420], [420, 300], [300, 0]], s, k)
@@ -202,6 +205,7 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
         { name: '可变情报板', value: closed ? '前方事故 减速慢行' : opening ? '恢复' : clearing ? '清障中 谨慎驾驶' : '正常', level: closed ? 'warn' : 'ok' },
         { name: '事件检测相机', value: s <= 2 ? (clearing ? '清障跟踪' : '锁定画面') : '恢复巡检', level: s <= 2 ? 'alarm' : 'ok' },
         { name: '紧急电话', value: s <= 1 ? '通话中' : s === 2 && !clearing ? '保持联络' : '已挂断', level: s <= 2 && !clearing ? 'alarm' : 'ok' },
+        { name: '清障车 / 过车通道', value: s <= 1 ? '待命 / 右道通行' : s === 2 && !clearing ? '救援进场 / 右道低速' : clearing ? '拖离事故车 / 依次放行' : '恢复通行', level: s === 2 && !opening ? 'warn' : 'ok' },
       ]
     },
   },
