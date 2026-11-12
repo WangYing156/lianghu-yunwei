@@ -56,14 +56,14 @@ export const ALL_POINT_GROUPS: PointGroup[] = [
   'monitor',
   'mep',
 ]
-/** 与原始项目各页面 TunnelScene 的 default-groups 一致 */
+/** 与各页面实际传入的原始点位分组一致；不再依赖已移除的共享点位目录。 */
 export const MODULE_POINT_GROUPS: Record<string, readonly PointGroup[]> = {
   overview: ALL_POINT_GROUPS,
-  traffic: ['structure', 'traffic'],
-  maintenance: ['structure', 'monitor'],
-  monitoring: ['structure', 'env', 'monitor'],
-  emergency: ['structure', 'env', 'mep'],
-  service: ['structure'],
+  traffic: ['traffic'],
+  maintenance: ['monitor'],
+  monitoring: ['env', 'monitor'],
+  emergency: ['env', 'mep', 'structure'],
+  service: ['monitor'],
   asset: ALL_POINT_GROUPS,
 }
 export function defaultPointGroups(path: string): readonly PointGroup[] {

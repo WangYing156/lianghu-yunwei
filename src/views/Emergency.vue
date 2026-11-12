@@ -33,7 +33,11 @@
       <div class="panel-title">
         孪生VR仿真
         <span class="vr-tag">就在上方三维场景里推演</span>
-        <span v-if="simActive" class="vr-tag live">● 仿真运行中 · 步骤 {{ simStep + 1 }}/{{ scenario.steps.length }}</span>
+        <span class="vr-tag note">推演值 · 非实时测点</span>
+        <span v-if="simActive" class="vr-tag live" :class="{ paused: !simPlaying }">
+          {{ simPlaying ? '● 推演运行中' : 'Ⅱ 推演已暂停' }} · 步骤 {{ simStep + 1 }}/{{ scenario.steps.length }}
+        </span>
+        <span class="vr-tag timing">{{ timingLabel }}</span>
       </div>
       <div class="vr-body">
         <div class="vr-scenarios" role="radiogroup" aria-label="仿真工况">
@@ -49,7 +53,7 @@
           >
             <span class="vr-card__icon">{{ s.short }}</span>
             <strong>{{ s.label }}</strong>
-            <small>{{ s.deck === 'lower' ? '下层车道' : '上层车道' }} · {{ s.steps.length }} 步</small>
+            <small>{{ s.deck === 'lower' ? '下层车道' : '上层车道' }} · {{ s.steps.length }} 步 · {{ scenarioTiming(s) }}</small>
           </button>
         </div>
 
@@ -66,13 +70,14 @@
                 <i>{{ i < simStep ? '✓' : i + 1 }}</i>
                 <div>
                   <span>{{ s.title }}</span>
+                  <small>{{ s.duration ? `${s.duration}s` : '行进驱动' }}</small>
                   <p v-if="i === simStep">{{ s.detail }}</p>
                 </div>
               </li>
             </ol>
           </div>
           <div class="vr-side">
-            <div class="vs-label">遥测指标 <small>{{ simActive ? '实时推演' : '工况预览' }}</small></div>
+            <div class="vs-label">工况推演值 <small>{{ simActive ? (simPlaying ? '随推演时钟刷新' : '已暂停') : '工况预览（模拟）' }}</small></div>
             <div class="vr-telemetry">
               <div v-for="t in telemetry" :key="t.key" :class="t.level">
                 <em>{{ t.label }}</em><b>{{ t.value }}</b>
@@ -94,15 +99,15 @@
               size="small"
               type="primary"
               :loading="simStarting && !simImmersive"
-              @click="enterSimulation(false)"
+              @click="enterSimulation(false, simActive)"
             >
-              <el-icon><VideoPlay /></el-icon>{{ simActive ? '重新进入当前工况' : '进入孪生仿真' }}
+              <el-icon><VideoPlay /></el-icon>{{ simActive ? '从头推演当前工况' : '进入孪生仿真' }}
             </el-button>
             <el-button
               size="small"
               type="success"
               :loading="simStarting && simImmersive"
-              @click="enterSimulation(true)"
+              @click="enterSimulation(true, false)"
             >
               <el-icon><FullScreen /></el-icon>全屏沉浸
             </el-button>
@@ -114,12 +119,13 @@
             </el-button>
             <el-button size="small" :disabled="simActive" @click="focusHotspot">定位关键点</el-button>
           </div>
-          <span v-if="simError" class="vr-error">{{ simError }}</span>
+          <span v-if="simError" class="vr-error" role="alert">{{ simError }}</span>
           <span v-else class="vr-hint">
-            进入后在三维场景内自动推演；HUD 可切换全景透视 / 事件近景 / 第一人称 / VR 分屏，空格暂停，← → 切换步骤，Esc 退出。
+            在上方三维场景内推演；点击步骤或拖拽画面会暂停接管，HUD 可切全景 / 近景 / 第一人称 / VR 分屏。空格播放，← → 切步，Esc 退出（VR 分屏下先退出分屏）。
           </span>
         </div>
         <div class="vr-desc">{{ scenario.desc }}</div>
+        <div class="vr-source">{{ TWIN_DATA_NOTE }}</div>
       </div>
     </div>
 
@@ -227,10 +233,13 @@ import { VideoPlay, VideoPause, RefreshRight, FullScreen } from '@element-plus/i
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 import VChart from '../components/VChart.vue'
 import {
+  TWIN_DATA_NOTE,
   TWIN_SCENARIOS,
   TWIN_SCENARIO_LIST,
+  type TwinScenario,
   type TwinScenarioId,
 } from '../config/twinScenarios'
+import { scenarioDuration } from '../utils/simulationPhysics'
 import type { TwinSimState } from '../composables/useTwinSimulation'
 
 type SceneApi = {
@@ -239,6 +248,7 @@ type SceneApi = {
     id: TwinScenarioId,
     step?: number,
     immersive?: boolean,
+    restart?: boolean,
   ) => Promise<boolean>
   stopSimulation: () => void
   setSimulationStep: (step: number) => void
@@ -317,6 +327,7 @@ const simActive = ref(false)
 const simStarting = ref(false)
 const simImmersive = ref(false)
 const simError = ref('')
+const lastSimStep = ref(0)
 let startToken = 0
 
 /** 仿真运行时以三维场景内的推演时钟为准，未运行时展示预览步骤 */
@@ -329,6 +340,20 @@ const telemetry = computed(() =>
 const devices = computed(() =>
   live.value?.devices.length ? live.value.devices : scenario.value.devices(simStep.value, 0),
 )
+function scenarioTiming(s: TwinScenario): string {
+  const total = scenarioDuration(s.steps.map((step) => step.duration))
+  return total > 0 ? `${Math.round(total)}s @1×` : '行进进度驱动'
+}
+const timingLabel = computed(() => scenarioTiming(scenario.value))
+
+// 退出时 live 会立刻变成 null，缓存最后一步，预览面板才能停在实际检视的位置。
+watch(
+  () => live.value?.step,
+  (step) => {
+    if (typeof step === 'number') lastSimStep.value = step
+  },
+  { immediate: true },
+)
 
 watch(
   () => live.value?.scenario,
@@ -337,17 +362,19 @@ watch(
   },
 )
 
-async function enterSimulation(immersive: boolean) {
+async function enterSimulation(immersive: boolean, restart = false) {
   const token = ++startToken
   simError.value = ''
   simStarting.value = true
   simImmersive.value = immersive
-  if (!immersive)
+  if (!immersive && !simActive.value)
     scenePanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const step = restart ? 0 : simStep.value
   const ok = await sceneRef.value?.startSimulation(
     scenarioId.value,
-    simStep.value,
+    step,
     immersive,
+    restart,
   )
   if (token !== startToken) return
   simStarting.value = false
@@ -359,10 +386,11 @@ async function enterSimulation(immersive: boolean) {
 
 function onSimulationExit() {
   startToken++
-  previewStep.value = simStep.value
+  previewStep.value = lastSimStep.value
   simActive.value = false
   simStarting.value = false
   simImmersive.value = false
+  simError.value = ''
 }
 
 function exitSimulation() {
@@ -373,14 +401,16 @@ function exitSimulation() {
 function launchScenario(id: TwinScenarioId) {
   scenarioId.value = id
   previewStep.value = 0
-  void enterSimulation(false)
+  lastSimStep.value = 0
+  void enterSimulation(false, true)
 }
 
 function selectScenario(id: TwinScenarioId) {
   if (id === scenarioId.value) return
   scenarioId.value = id
   previewStep.value = 0
-  if (simActive.value) void enterSimulation(simImmersive.value)
+  lastSimStep.value = 0
+  if (simActive.value) void enterSimulation(simImmersive.value, true)
 }
 
 function goStep(step: number) {
@@ -508,6 +538,9 @@ onBeforeUnmount(() => {
   background: rgba(78, 230, 255, 0.12); border: 1px solid rgba(78, 230, 255, 0.3);
   padding: 1px 8px; border-radius: 10px;
   &.live { color: var(--vr-ok); border-color: rgba(46, 230, 160, 0.4); background: rgba(46, 230, 160, 0.1); }
+  &.paused { color: #ffd28a; border-color: rgba(255, 176, 58, 0.45); background: rgba(255, 176, 58, 0.1); }
+  &.note { color: #ffd8a8; border-color: rgba(255, 176, 58, 0.42); background: rgba(255, 176, 58, 0.1); }
+  &.timing { color: #9ed0ff; border-color: rgba(120, 190, 255, 0.34); background: rgba(78, 160, 255, 0.1); }
 }
 .vr-body { display: flex; flex-direction: column; gap: 10px; }
 .vr-scenarios {
@@ -558,7 +591,9 @@ onBeforeUnmount(() => {
       width: 18px; height: 18px; flex: none; border-radius: 50%; display: grid; place-items: center;
       font-style: normal; font-size: 10px; background: rgba(78, 160, 255, 0.15); color: #9cc4ef;
     }
-    p { margin: 4px 0 0; color: #aac4e4; line-height: 1.55; }
+    div { flex: 1; min-width: 0; }
+    small { float: right; margin-left: 8px; font-size: 10px; color: #6686aa; }
+    p { clear: both; margin: 4px 0 0; color: #aac4e4; line-height: 1.55; }
     &:hover { background: rgba(78, 160, 255, 0.08); }
     &.done { color: #9fd0b8; i { background: rgba(46, 230, 160, 0.18); color: var(--vr-ok); } }
     &.active {
@@ -600,6 +635,12 @@ onBeforeUnmount(() => {
   font-size: 12px; color: #aebcd8; line-height: 1.6;
   padding: 10px 12px; background: rgba(20, 48, 98, 0.3); border-radius: 6px;
   border-left: 2px solid #4ee6ff;
+}
+.vr-source {
+  font-size: 11px; color: #d8b887; line-height: 1.5;
+  padding: 7px 10px; border-radius: 6px;
+  background: rgba(255, 176, 58, 0.08);
+  border: 1px dashed rgba(255, 176, 58, 0.36);
 }
 
 @media (max-width: 1100px) {

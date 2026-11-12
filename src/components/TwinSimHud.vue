@@ -1,5 +1,5 @@
 <template>
-  <div class="twin-hud" :class="{ stereo: state.stereo }">
+  <div ref="rootRef" class="twin-hud" :class="{ stereo: state.stereo, compact }">
     <section
       class="twin-hud__brief"
       aria-label="孪生仿真推演步骤"
@@ -11,6 +11,7 @@
         <div>
           <strong>{{ scenario.label }}</strong>
           <small>孪生 VR 仿真 · {{ viewLabel }}</small>
+          <em class="twin-hud__badge">推演值 · 非实时测点</em>
         </div>
         <button
           type="button"
@@ -88,12 +89,12 @@
     <section
       v-if="state.active"
       class="twin-hud__data"
-      aria-label="实时遥测与联动设备"
+      aria-label="工况推演值与联动设备"
       @pointerdown.stop
       @wheel.stop
     >
       <div class="twin-hud__live">
-        <i></i>仿真遥测 · 步骤 {{ state.step + 1 }}/{{ scenario.steps.length }}
+        <i></i>工况推演值 · 步骤 {{ state.step + 1 }}/{{ scenario.steps.length }}
       </div>
       <div class="twin-hud__telemetry">
         <div v-for="t in state.telemetry" :key="t.key" :class="t.level">
@@ -109,7 +110,18 @@
     </section>
 
     <div
-      v-if="state.active"
+      v-if="state.error && state.active"
+      class="twin-hud__toast"
+      role="alert"
+      @pointerdown.stop
+      @click.stop
+    >
+      <span>{{ state.error }}</span>
+      <button type="button" aria-label="关闭提示" @click="emit('dismiss-error')">×</button>
+    </div>
+
+    <div
+      v-if="state.active && !compact"
       class="twin-hud__stage-banner"
       aria-live="polite"
     >
@@ -137,10 +149,10 @@
         {{ v.label }}
       </button>
       <button
-        v-if="state.view === 'overview'"
+        v-if="state.view === 'overview' && !state.stereo"
         type="button"
         :class="{ on: state.orbit }"
-        title="全景视角下自动环绕事件点；拖拽场景即接管"
+        title="全景视角下自动环绕事件点并继续推演；拖拽画面即暂停并接管"
         @click="emit('orbit', !state.orbit)"
       >
         自动环绕
@@ -150,25 +162,37 @@
         type="button"
         class="vr"
         :class="{ on: state.stereo }"
-        title="立体分屏 VR（可配合 Cardboard 等头显观看）"
+        title="Cesium 立体分屏；可配合 Cardboard 等兼容浏览器 / 头显观看"
         @click="emit('stereo', !state.stereo)"
       >
         {{ state.stereo ? '退出 VR' : 'VR 分屏' }}
       </button>
-      <span class="keys">空格 播放 · ← → 步骤 · Esc 退出</span>
+      <button
+        type="button"
+        :class="{ on: expanded }"
+        title="放大场景或退出大图"
+        @click="emit('fullscreen')"
+      >
+        {{ expanded ? '退出大图' : '放大场景' }}
+      </button>
+      <span class="keys">空格 播放 · ← → 切步并暂停 · 拖拽接管 · Esc 退出</span>
     </nav>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { TwinScenario } from '../config/twinScenarios'
 import type { TwinSimState, TwinView } from '../composables/useTwinSimulation'
 
-const props = defineProps<{
-  state: TwinSimState
-  scenario: TwinScenario
-}>()
+const props = withDefaults(
+  defineProps<{
+    state: TwinSimState
+    scenario: TwinScenario
+    expanded?: boolean
+  }>(),
+  { expanded: false },
+)
 const emit = defineEmits<{
   (e: 'play'): void
   (e: 'step', step: number): void
@@ -176,28 +200,49 @@ const emit = defineEmits<{
   (e: 'rate', rate: 1 | 2 | 4): void
   (e: 'orbit', on: boolean): void
   (e: 'stereo', on: boolean): void
+  (e: 'fullscreen'): void
+  (e: 'dismiss-error'): void
   (e: 'exit'): void
 }>()
+
+const rootRef = ref<HTMLElement | null>(null)
+const compact = ref(false)
+let observer: ResizeObserver | null = null
+
+onMounted(() => {
+  const host = rootRef.value?.parentElement
+  if (!host || typeof ResizeObserver === 'undefined') return
+  observer = new ResizeObserver(([entry]) => {
+    const { width, height } = entry.contentRect
+    compact.value = height < 620 || width < 1000
+  })
+  observer.observe(host)
+})
+
+onBeforeUnmount(() => observer?.disconnect())
 
 const current = computed(
   () => props.scenario.steps[Math.min(props.state.step, props.scenario.steps.length - 1)],
 )
 
-const views = computed<{ id: TwinView; label: string; tip: string }[]>(() =>
-  props.scenario.id === 'patrol'
-    ? [
-        { id: 'walk', label: '第一人称', tip: '沿下层真实路面巡检行进' },
-        { id: 'overview', label: '全景透视', tip: '结构透视俯瞰整段竣工模型' },
-      ]
-    : [
-        { id: 'overview', label: '全景透视', tip: '结构透视 + 环绕观察事件全貌' },
-        { id: 'event', label: '事件近景', tip: '模型内部近距离观察事件点' },
-        { id: 'walk', label: '第一人称', tip: '从上游沿路面行进驶近事件点' },
-      ],
-)
+const views = computed<{ id: TwinView; label: string; tip: string }[]>(() => {
+  const all: { id: TwinView; label: string; tip: string }[] =
+    props.scenario.id === 'patrol'
+      ? [
+          { id: 'walk', label: '第一人称', tip: '沿下层真实路面巡检行进' },
+          { id: 'overview', label: '全景透视', tip: '结构透视俯瞰整段竣工模型' },
+        ]
+      : [
+          { id: 'overview', label: '全景透视', tip: '结构透视 + 环绕观察事件全貌' },
+          { id: 'event', label: '事件近景', tip: '模型内部近距离观察事件点' },
+          { id: 'walk', label: '第一人称', tip: '从上游沿路面行进驶近事件点' },
+        ]
+  // 立体分屏里不提供全景自动环绕，避免头显内持续转动造成眩晕。
+  return props.state.stereo ? all.filter((v) => v.id !== 'overview') : all
+})
 
 const viewLabel = computed(
-  () => views.value.find((v) => v.id === props.state.view)?.label ?? '',
+  () => views.value.find((v) => v.id === props.state.view)?.label ?? '事件近景',
 )
 </script>
 
@@ -288,6 +333,18 @@ const viewLabel = computed(
       text-shadow: 0 0 12px rgba(78, 190, 255, 0.4);
     }
     small { color: #8ab4dc; font-size: 0.9em; }
+    .twin-hud__badge {
+      display: inline-block;
+      margin-top: 3px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 0.76em;
+      font-style: normal;
+      letter-spacing: 0.02em;
+      color: #ffd8a8;
+      background: rgba(255, 176, 58, 0.12);
+      border: 1px solid rgba(255, 176, 58, 0.42);
+    }
   }
   ol { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   li {
@@ -389,9 +446,39 @@ const viewLabel = computed(
     &.alarm b { color: var(--hud-alarm); }
   }
 }
+.twin-hud__toast {
+  position: absolute;
+  left: 50%;
+  bottom: 62px;
+  transform: translateX(-50%);
+  z-index: 8;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(620px, calc(100% - 40px));
+  padding: 7px 10px 7px 12px;
+  border-radius: 8px;
+  color: #ffd9dc;
+  background: rgba(64, 12, 22, 0.92);
+  border: 1px solid rgba(255, 95, 107, 0.72);
+  box-shadow: 0 10px 28px rgba(0, 4, 14, 0.55);
+  font-size: 12px;
+  span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border: 0;
+    border-radius: 4px;
+    color: #ffd9dc;
+    background: rgba(255, 255, 255, 0.12);
+    cursor: pointer;
+  }
+}
 .twin-hud__views {
   left: 50%;
-  bottom: 64px;
+  bottom: 16px;
   transform: translateX(-50%);
   display: flex; align-items: center; gap: 6px; padding: 6px 8px;
   white-space: nowrap;
@@ -407,6 +494,26 @@ const viewLabel = computed(
 /* 立体分屏时只保留视角条，避免遮挡双目画面 */
 .twin-hud.stereo {
   .twin-hud__brief, .twin-hud__data, .twin-hud__stage-banner { display: none; }
+}
+
+/* 嵌入式场景 / 窄窗口：保留步骤和遥测，去掉重复长文案 */
+.twin-hud.compact {
+  .twin-hud__stage-banner,
+  .twin-hud__narration,
+  .twin-hud__devices,
+  .twin-hud__views .keys { display: none; }
+  .twin-hud__brief {
+    width: min(280px, 44%);
+    padding: 8px 10px;
+    ol { gap: 2px; margin-top: 5px; }
+    li { padding: 4px 7px; }
+  }
+  .twin-hud__data {
+    width: min(230px, 40%);
+    padding: 8px 10px;
+  }
+  .twin-hud__views { bottom: 12px; }
+  .twin-hud__toast { bottom: 54px; }
 }
 
 @media (max-height: 560px) {

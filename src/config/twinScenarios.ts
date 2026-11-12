@@ -1,14 +1,21 @@
 /**
- * 孪生 VR 仿真推演脚本：步骤、联动设备与随时间演化的遥测曲线（纯数据 / 纯函数，便于单测）。
+ * 孪生 VR 仿真推演脚本：步骤、联动设备与随时间演化的推演曲线（纯数据 / 纯函数，便于单测）。
  * 空间锚点均取自局部竣工模型真实双层路面（PARTIAL_ROAMING_ROUTES），progress 为路线弧长比例。
+ *
+ * 这里的所有读数都是工况脚本推演值，不是实时 IoT 测点；设备动作也是三维场景内的联动示意。
  */
 export type TwinScenarioId = 'fire' | 'flood' | 'accident' | 'patrol'
 export type TwinLevel = 'ok' | 'warn' | 'alarm'
+export type TwinVentilationMode = 'normal' | 'exhaust'
+
+/** 统一的数据边界说明，页面、HUD 与交付文档共用，避免把推演值讲成实测值。 */
+export const TWIN_DATA_NOTE =
+  '工况读数与设备状态为脚本推演值，非实时测点；BIM 几何、双层路面与风机位置来自真实竣工模型。'
 
 export interface TwinStep {
   title: string
   detail: string
-  /** 自动推演时长（秒，1× 速度） */
+  /** 自动推演时长（秒，1× 速度）；0 表示由第一人称行进进度驱动 */
   duration: number
 }
 
@@ -27,13 +34,23 @@ export interface TwinDevice {
   level: TwinLevel
 }
 
+export interface FireVentilationPlan {
+  mode: TwinVentilationMode
+  /** 事件所在下层风机负荷 */
+  lower: number
+  /** 非事件层保持常规通风，不被排烟模式误降速 */
+  upper: number
+  vent: boolean
+  label: string
+}
+
 export interface TwinScenario {
   id: TwinScenarioId
   label: string
   short: string
   desc: string
   deck: 'lower' | 'upper'
-  /** 事件中心沿路线位置；flood 运行时改取路线最低点 */
+  /** 事件中心沿路线位置；flood 运行时改取洞口内低点 */
   eventProgress: number
   /** 业务点位（原始方案点位 id），用于与二维点位联动定位 */
   hotspot: string
@@ -60,12 +77,27 @@ const level = (v: number, warn: number, alarm: number, inverse = false): TwinLev
 }
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
+/**
+ * 火灾排烟与遥测、风机覆写、烟气方向共用同一份状态机：
+ * 0 常规通风 → 1/2 事故层全速排烟 → 3 前半段续排、后半段回落常规。
+ */
+export function fireVentilationPlan(step: number, k: number): FireVentilationPlan {
+  const exhaust = step === 1 || step === 2 || (step === 3 && k < 0.55)
+  return {
+    mode: exhaust ? 'exhaust' : 'normal',
+    lower: exhaust ? 1 : 0.72,
+    upper: 0.72,
+    vent: exhaust,
+    label: exhaust ? '火灾排烟联动' : '常规通风恢复',
+  }
+}
+
 export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
   fire: {
     id: 'fire',
     label: '火灾疏散',
     short: '火灾',
-    desc: '下层车道车辆起火：联动射流风机纵向排烟、加压送风、疏散指示与应急广播，推演烟气蔓延与人员疏散。',
+    desc: '下层车道车辆起火：事故层射流风机纵向排烟、加压送风、疏散指示与应急广播联动，推演烟气蔓延与人员疏散；最后排烟回落常规通风。',
     deck: 'lower',
     eventProgress: 0.46,
     hotspot: 'fan1',
@@ -87,26 +119,31 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
         { key: 'evac', label: '疏散完成', value: `${evac.toFixed(0)}%`, level: evac >= 99 ? 'ok' : 'warn', ratio: clamp01(evac / 100) },
       ]
     },
-    devices: (s) => [
-      { name: '下层射流风机', value: s === 0 ? '常规 36Hz' : s === 3 ? '回落 36Hz' : '排烟 50Hz', level: s === 1 || s === 2 ? 'alarm' : 'ok' },
-      { name: '加压送风口', value: s >= 1 && s <= 2 ? '开启' : '关闭', level: s >= 1 && s <= 2 ? 'warn' : 'ok' },
-      { name: '疏散指示', value: s >= 2 ? '上游诱导' : '待命', level: s === 2 ? 'warn' : 'ok' },
-      { name: '应急广播', value: s >= 2 && s < 3 ? '循环播放' : s === 3 ? '解除' : '待命', level: s === 2 ? 'alarm' : 'ok' },
-    ],
+    devices: (s, k) => {
+      const plan = fireVentilationPlan(s, k)
+      const ventOpen = s === 1 || s === 2 || (s === 3 && k < 0.55)
+      const guiding = s === 2 || (s === 3 && k < 0.35)
+      return [
+        { name: '下层射流风机', value: plan.mode === 'exhaust' ? '排烟 50Hz' : '常规 36Hz', level: plan.mode === 'exhaust' ? 'alarm' : 'ok' },
+        { name: '加压送风口', value: ventOpen ? '开启' : '关闭', level: ventOpen ? 'warn' : 'ok' },
+        { name: '疏散指示', value: guiding ? '上游诱导' : s === 3 ? '解除' : '待命', level: guiding ? 'warn' : 'ok' },
+        { name: '应急广播', value: s === 2 ? '循环播放' : s === 3 && k < 0.55 ? '解除播报' : s === 3 ? '解除' : '待命', level: s === 2 ? 'alarm' : 'ok' },
+      ]
+    },
   },
   flood: {
     id: 'flood',
     label: '积水排涝',
     short: '积水',
-    desc: '暴雨倒灌：路面汇水流向下层最低点，液位超红色阈值后联动排涝泵、车道封闭与绕行诱导，推演水位涨落。',
+    desc: '暴雨倒灌：水平水面按竣工路面真实纵坡求交，液位超红色阈值后联动排涝泵、车道封闭与绕行诱导，推演水位涨落和抽排全过程。',
     deck: 'lower',
     eventProgress: 0,
     hotspot: 'w2',
     steps: [
-      { title: '液位红色预警', detail: '路面汇水沿纵坡流向下层最低点，液位持续上涨突破 25cm 红色阈值。', duration: 14 },
-      { title: '泵站联动启动', detail: '排涝泵 P1/P2 自动启动，泵井持续抽排，水位上涨速度明显放缓。', duration: 14 },
-      { title: '交通诱导绕行', detail: '下层车道指示器全部转红叉封闭，情报板发布积水绕行，车辆改走上层。', duration: 14 },
-      { title: '水位回落确认', detail: '雨强减弱，抽排能力大于来水，液位回落至安全线以下，逐步恢复通行。', duration: 16 },
+      { title: '液位红色预警', detail: '路面汇水流向洞口内低点，水平水面随液位上涨；第一步末达到 26.8cm 红色阈值。', duration: 14 },
+      { title: '泵站联动启动', detail: '排涝泵 P1/P2 启动并建立抽排流量，泵井受纳，水位上涨速度明显放缓。', duration: 14 },
+      { title: '交通诱导绕行', detail: '下层车道指示器转红叉封闭，情报板发布积水绕行，车辆沿诱导线改走上层。', duration: 14 },
+      { title: '水位回落确认', detail: '雨强减弱，抽排能力持续大于来水，液位回落至安全线以下，逐步恢复通行。', duration: 16 },
     ],
     telemetry: (s, k) => {
       const lv = piecewise([[8, 26.8], [26.8, 29.4], [29.4, 23.5], [23.5, 3.2]], s, k)
@@ -118,26 +155,33 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
         { key: 'rain', label: '雨强', value: `${rain.toFixed(0)}mm/h`, level: level(rain, 20, 35), ratio: clamp01(rain / 50) },
       ]
     },
-    devices: (s) => [
-      { name: '积水点 W2', value: s <= 1 ? '红色预警' : s === 2 ? '高位回落' : '安全', level: s <= 1 ? 'alarm' : s === 2 ? 'warn' : 'ok' },
-      { name: '排涝泵 P1/P2', value: s === 0 ? '待机' : '运行 210m³/h×2', level: s === 0 ? 'ok' : 'warn' },
-      { name: '下层车道指示器', value: s === 2 ? '全部封闭' : s === 3 ? '逐步放行' : '正常', level: s === 2 ? 'alarm' : 'ok' },
-      { name: '可变情报板', value: s >= 2 ? '积水绕行上层' : '正常', level: s >= 2 ? 'warn' : 'ok' },
-    ],
+    devices: (s, k) => {
+      const flow = piecewise([[0, 0], [0, 420], [420, 420], [420, 210]], s, k)
+      const starting = s === 1 && k < 0.2
+      const running = s >= 2 || (s === 1 && k >= 0.2)
+      const guiding = s === 2 || (s === 3 && k < 0.55)
+      const passing = s === 3 && k >= 0.55
+      return [
+        { name: '积水点 W2', value: s <= 1 ? '红色预警' : s === 2 ? '高位回落' : '安全', level: s <= 1 ? 'alarm' : s === 2 ? 'warn' : 'ok' },
+        { name: '排涝泵 P1/P2', value: starting ? '启动建压' : running ? `运行 ${flow.toFixed(0)}m³/h` : '待机', level: running ? 'warn' : 'ok' },
+        { name: '下层车道指示器', value: guiding ? '全部封闭' : passing ? '逐步放行' : '正常', level: guiding ? 'alarm' : 'ok' },
+        { name: '可变情报板', value: passing ? '积水消退 · 恢复通行' : guiding ? '积水绕行上层' : '正常', level: guiding ? 'warn' : 'ok' },
+      ]
+    },
   },
   accident: {
     id: 'accident',
     label: '交通事故',
     short: '事故',
-    desc: '上层车道两车追尾：联动车道指示器、可变情报板与视频监控，推演排队蔓延、救援进场与管制解除。',
+    desc: '上层车道两车追尾：联动车道指示器、可变情报板与视频复核，推演排队蔓延、救援进场、清障拖离与管制解除。',
     deck: 'upper',
     eventProgress: 0.55,
     hotspot: 'm1',
     steps: [
       { title: '接警与视频复核', detail: '事件检测相机识别停驶车辆，视频复核为两车追尾，后方车辆开始排队。', duration: 12 },
       { title: '车道管制发布', detail: '事故车道指示器转红叉，摆放锥桶渐变封闭，相邻车道低速通行。', duration: 14 },
-      { title: '现场处置疏导', detail: '救援车经开放车道进场，警示灯开启，现场清障与伤员处置。', duration: 16 },
-      { title: '解除管制恢复', detail: '事故车辆拖离，指示器恢复绿色箭头，排队车辆依次驶离。', duration: 14 },
+      { title: '现场处置疏导', detail: '救援车经开放车道进场，警示灯开启，现场清障与伤员处置；后半段事故车拖离。', duration: 16 },
+      { title: '解除管制恢复', detail: '事故车辆离场，指示器恢复绿色箭头，排队车辆依次驶离。', duration: 14 },
     ],
     telemetry: (s, k) => {
       const queue = piecewise([[0, 180], [180, 420], [420, 300], [300, 0]], s, k)
@@ -149,26 +193,31 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
         { key: 'resp', label: '响应用时', value: `${resp.toFixed(1)}min`, level: resp > 5 ? 'warn' : 'ok', ratio: clamp01(resp / 6) },
       ]
     },
-    devices: (s) => [
-      { name: '车道指示器', value: s === 0 ? '正常' : s === 3 ? '恢复通行' : '左闭右通', level: s === 1 || s === 2 ? 'warn' : 'ok' },
-      { name: '可变情报板', value: s === 0 ? '正常' : s === 3 ? '恢复' : '前方事故 减速慢行', level: s === 1 || s === 2 ? 'warn' : 'ok' },
-      { name: '事件检测相机', value: s === 0 ? '锁定画面' : '持续跟踪', level: s <= 2 ? 'alarm' : 'ok' },
-      { name: '紧急电话', value: s <= 1 ? '通话中' : '已挂断', level: s <= 1 ? 'alarm' : 'ok' },
-    ],
+    devices: (s, k) => {
+      const clearing = (s === 2 && k >= 0.52) || s === 3
+      const opening = s === 3 && k >= 0.55
+      const closed = (s === 1 || s === 2) && !clearing
+      return [
+        { name: '车道指示器', value: closed ? '左闭右通' : opening ? '恢复通行' : clearing ? '逐步放行' : '正常', level: closed ? 'warn' : 'ok' },
+        { name: '可变情报板', value: closed ? '前方事故 减速慢行' : opening ? '恢复' : clearing ? '清障中 谨慎驾驶' : '正常', level: closed ? 'warn' : 'ok' },
+        { name: '事件检测相机', value: s <= 2 ? (clearing ? '清障跟踪' : '锁定画面') : '恢复巡检', level: s <= 2 ? 'alarm' : 'ok' },
+        { name: '紧急电话', value: s <= 1 ? '通话中' : s === 2 && !clearing ? '保持联络' : '已挂断', level: s <= 2 && !clearing ? 'alarm' : 'ok' },
+      ]
+    },
   },
   patrol: {
     id: 'patrol',
     label: '日常巡检',
     short: '巡检',
-    desc: '第一人称沿下层真实路面巡检：叠加射流风机实时转速、环控指标，发现异常停机风机并生成工单闭环。',
+    desc: '第一人称沿下层真实路面巡检：叠加射流风机推演转速、环控指标，发现异常停机风机并生成推演工单闭环。',
     deck: 'lower',
     eventProgress: 0.5,
     hotspot: 'fire1',
     steps: [
       { title: '入口段结构巡视', detail: '沿下层车道入场，核对衬砌、路面与沿线结构状态。', duration: 0 },
-      { title: '机电设备抽检', detail: '逐台检视射流风机实时转速与运行方向，核对与监控平台一致。', duration: 0 },
-      { title: '环控指标核对', detail: '核对 CO、照度、风速等环控指标，确认通风效果达标。', duration: 0 },
-      { title: '异常标注闭环', detail: '发现一台射流风机停机，现场标注并自动生成维修工单。', duration: 0 },
+      { title: '机电设备抽检', detail: '逐台检视射流风机推演转速与运行方向，核对与监控平台示意一致。', duration: 0 },
+      { title: '环控指标核对', detail: '核对 CO、照度、风速等环控推演值，确认通风效果达标。', duration: 0 },
+      { title: '异常标注闭环', detail: '发现一台射流风机停机，现场标注并在推演中生成维修工单。', duration: 0 },
     ],
     telemetry: (s, k) => {
       const co = 12 + Math.sin((s + k) * 2.1) * 2.4
@@ -183,10 +232,10 @@ export const TWIN_SCENARIOS: Record<TwinScenarioId, TwinScenario> = {
       ]
     },
     devices: (s) => [
-      { name: '射流风机（下层）', value: s >= 3 ? '1 台停机' : '运行正常', level: s >= 3 ? 'alarm' : 'ok' },
-      { name: 'CO/VI 检测器', value: '在线', level: 'ok' },
-      { name: '照明回路', value: '基本照明', level: 'ok' },
-      { name: '巡检工单', value: s >= 3 ? '已生成 WO-0317' : '—', level: s >= 3 ? 'warn' : 'ok' },
+      { name: '射流风机（下层）', value: s >= 3 ? '1 台停机（推演）' : '运行正常（推演）', level: s >= 3 ? 'alarm' : 'ok' },
+      { name: 'CO/VI 检测器', value: '在线（示意）', level: 'ok' },
+      { name: '照明回路', value: '基本照明（示意）', level: 'ok' },
+      { name: '巡检工单', value: s >= 3 ? '推演工单 WO-0317' : '—', level: s >= 3 ? 'warn' : 'ok' },
     ],
   },
 }
