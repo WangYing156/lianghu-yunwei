@@ -61,6 +61,7 @@
     <AlertTicker
       v-if="['/overview', '/emergency', '/monitoring'].includes(route.path)"
       :items="tickerAlerts"
+      :live="activeAlerts.length > 0"
       @locate="focusAlert($event)"
     />
 

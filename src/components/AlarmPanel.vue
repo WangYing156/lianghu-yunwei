@@ -9,7 +9,7 @@
   >
     <div class="alarm-heading">
       <h2>全局告警</h2>
-      <span class="feed-status"><i></i>示例轮播</span
+      <span class="feed-status" :class="{ live }"><i></i>{{ live ? '接口实时' : '示例轮播' }}</span>
       ><button
         type="button"
         class="feed-toggle"
@@ -101,7 +101,9 @@ import { computed } from 'vue'
 import { ArrowRight, Location, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { ALERT_LEVELS, type TunnelAlert } from '../config/alerts'
 import { useRotatingFeed } from '../composables/useRotatingFeed'
-const props = defineProps<{ items: readonly TunnelAlert[] }>()
+const props = withDefaults(defineProps<{ items: readonly TunnelAlert[]; live?: boolean }>(), {
+  live: false,
+})
 const emit = defineEmits<{ locate: [item: TunnelAlert] }>()
 const {
   active,
@@ -136,6 +138,7 @@ const queue = computed(() => {
     letter-spacing: 1px;
   }
 }
+.feed-status.live i { background: #00b42a; }
 .feed-status {
   margin-left: auto;
   display: flex;

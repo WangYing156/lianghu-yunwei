@@ -14,7 +14,7 @@
     <!-- 左侧悬浮面板列 -->
     <div class="map-side-rail map-side-rail--left">
       <div class="panel side-panel">
-        <AlarmPanel :items="panelAlerts" @locate="locateAlarm" />
+        <AlarmPanel :items="panelAlerts" :live="alerts.length > 0" @locate="locateAlarm" />
       </div>
 
       <div class="panel side-panel">

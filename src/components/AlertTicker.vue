@@ -11,7 +11,7 @@
   >
     <div class="ticker-label">
       <span class="ticker-pulse"></span><el-icon><Warning /></el-icon
-      ><strong>预警信息</strong><small>示例轮播</small>
+      ><strong>预警信息</strong><small>{{ live ? '接口实时' : '示例轮播' }}</small>
     </div>
     <div class="ticker-viewport" aria-live="off">
       <Transition name="warning-slide" mode="out-in"
@@ -19,7 +19,7 @@
           :key="active.id"
           type="button"
           class="ticker-content"
-          title="定位该预警的模拟点位"
+          :title="live ? '定位该预警点位' : '定位该预警的示例点位'"
           @click="emit('locate', active)"
         >
           <span class="ticker-level">{{
@@ -75,7 +75,9 @@ import {
 } from '@element-plus/icons-vue'
 import { ALERT_LEVELS, type TunnelAlert } from '../config/alerts'
 import { useRotatingFeed } from '../composables/useRotatingFeed'
-const props = defineProps<{ items: readonly TunnelAlert[] }>()
+const props = withDefaults(defineProps<{ items: readonly TunnelAlert[]; live?: boolean }>(), {
+  live: false,
+})
 const emit = defineEmits<{ locate: [alert: TunnelAlert] }>()
 const {
   active,
