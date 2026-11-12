@@ -10,7 +10,10 @@
     "test": "tsx --test tests/*.test.ts",
     "calibrate:roaming": "node scripts/calibrate-roaming-route.mjs",
     "test:scene": "node scripts/smoke-scene.mjs",
-    "test:twin": "node scripts/smoke-twin.mjs"
+    "test:twin": "node scripts/smoke-twin.mjs",
+    "backend": "npm --prefix server start",
+    "backend:check": "npm --prefix server run db:check",
+    "test:api": "node server/scripts/smoke-api.js"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

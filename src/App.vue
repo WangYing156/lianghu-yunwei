@@ -40,23 +40,28 @@
       <!-- 右侧工具 -->
       <div class="tb-tools">
         <span class="datetime">{{ nowStr }}</span>
-        <el-badge :value="DEMO_ALERTS.length" class="alarm-badge">
+        <el-badge v-if="alertCount" :value="alertCount" class="alarm-badge">
           <el-button
             size="small"
             circle
             class="bell-btn"
             aria-label="定位重点告警"
-            @click="requestSceneFocus(DEMO_ALERTS[0].pointId)"
+            @click="focusFirstAlert"
             ><el-icon><Bell /></el-icon
           ></el-button>
         </el-badge>
+        <span v-if="user" class="user-chip">
+          <b>{{ user.displayName }}</b><i>{{ user.roleLabel }}</i>
+          <button type="button" class="link-btn" @click="logout">退出</button>
+        </span>
+        <el-button v-else size="small" type="primary" plain @click="loginVisible = true">登录</el-button>
       </div>
     </header>
 
     <AlertTicker
       v-if="['/overview', '/emergency', '/monitoring'].includes(route.path)"
-      :items="DEMO_ALERTS"
-      @locate="requestSceneFocus($event.pointId)"
+      :items="tickerAlerts"
+      @locate="focusAlert($event)"
     />
 
     <!-- 主内容（全屏场景） -->
@@ -66,29 +71,85 @@
   </div>
 
   <VideoPreviewDialog />
+  <LoginDialog v-model="loginVisible" @success="onLogin" />
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { Bell } from '@element-plus/icons-vue'
 import VideoPreviewDialog from './components/VideoPreviewDialog.vue'
+import LoginDialog from './components/LoginDialog.vue'
 import { requestSceneFocus } from './composables/useSceneNavigation'
 import AlertTicker from './components/AlertTicker.vue'
-import { DEMO_ALERTS } from './config/alerts'
+import { DEMO_ALERTS, type TunnelAlert } from './config/alerts'
+import { api, clearSession, getStoredUser, type AlertItem, type AuthUser, type ModuleEntry } from './api/client'
+import { alertToPanelAlert } from './api/usePageData'
 
 const route = useRoute()
 const router = useRouter()
 
-const menus = [
+/** 模块角标由后端 /dashboard/modules 下发；接口不可用时回落到本地占位 */
+const FALLBACK_MENUS = [
   { path: '/overview', label: '总览', icon: '🏠', badge: '' },
-  { path: '/traffic', label: '智能交通', icon: '🚦', badge: '3' },
-  { path: '/maintenance', label: '智慧养护', icon: '🛠️', badge: '2' },
-  { path: '/monitoring', label: '智慧监测', icon: '📡', badge: '1' },
-  { path: '/emergency', label: '数字应急', icon: '🚨', badge: '1' },
+  { path: '/traffic', label: '智能交通', icon: '🚦', badge: '' },
+  { path: '/maintenance', label: '智慧养护', icon: '🛠️', badge: '' },
+  { path: '/monitoring', label: '智慧监测', icon: '📡', badge: '' },
+  { path: '/emergency', label: '数字应急', icon: '🚨', badge: '' },
   { path: '/service', label: '数字服务', icon: '📱', badge: '' },
   { path: '/asset', label: '资产资料中心', icon: '📚', badge: '' },
 ]
+
+const menus = ref(FALLBACK_MENUS)
+
+const activeAlerts = ref<AlertItem[]>([])
+const user = ref<AuthUser | null>(getStoredUser())
+const loginVisible = ref(false)
+
+const alertCount = computed(() => activeAlerts.value.length)
+
+/** 顶栏滚动告警：接口数据优先，接口不可用时展示本地示例 */
+const tickerAlerts = computed<TunnelAlert[]>(() =>
+  activeAlerts.value.length ? activeAlerts.value.map(alertToPanelAlert) : DEMO_ALERTS.map((a) => ({ ...a })),
+)
+
+function focusAlert(alert: TunnelAlert) {
+  const matched = activeAlerts.value.find((item) => (item.code || String(item.id)) === alert.id)
+  requestSceneFocus(matched?.pointId || alert.pointId)
+}
+
+function focusFirstAlert() {
+  const first = tickerAlerts.value[0]
+  if (first) focusAlert(first)
+}
+
+function onLogin(loggedIn: AuthUser) {
+  user.value = loggedIn
+  void loadHeader()
+}
+
+function logout() {
+  clearSession()
+  user.value = null
+  ElMessage.success('已退出登录')
+}
+
+async function loadHeader() {
+  const [alertResult, moduleResult] = await Promise.allSettled([
+    api.get<AlertItem[]>('/alerts/active', undefined, { silent: true }),
+    api.get<ModuleEntry[]>('/dashboard/modules', undefined, { silent: true }),
+  ])
+  if (alertResult.status === 'fulfilled') activeAlerts.value = alertResult.value
+  if (moduleResult.status === 'fulfilled') {
+    menus.value = moduleResult.value.map((item) => ({
+      path: item.path,
+      label: item.name,
+      icon: item.icon,
+      badge: item.badge ? String(item.badge) : '',
+    }))
+  }
+}
 
 const nowStr = ref('')
 let timer: number | undefined
@@ -98,6 +159,7 @@ function tick() {
   nowStr.value = `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())}  ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 onMounted(() => {
+  void loadHeader()
   tick()
   timer = window.setInterval(tick, 1000)
 })
@@ -190,6 +252,17 @@ onBeforeUnmount(() => clearInterval(timer))
   grid-column: 2;
   grid-row: 2;
   justify-self: start;
+}
+.user-chip {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: #cfe4ff;
+  b { font-weight: 600; }
+  i { font-style: normal; color: #7fd7ff; }
+  .link-btn {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font-size: 11px; color: #8aa5c8; text-decoration: underline;
+    &:hover { color: #fff; }
+  }
 }
 .tb-tools {
   position: absolute;

@@ -1,5 +1,9 @@
 <template>
   <div class="page-bg">
+    <div class="data-source" :class="source">
+      <span class="dot"></span>{{ sourceLabel(source) }} · 积水/泵组/物资来自接口，工况推演为脚本演算
+    </div>
+
     <!-- 应急处置三维场景（可拖拽调高；孪生仿真时升高并叠加 HUD） -->
     <div ref="scenePanelRef" class="panel scene-panel" :class="{ tall: simActive }">
       <TunnelScene
@@ -134,10 +138,10 @@
       <div class="panel">
         <div class="panel-title">火灾排烟控制</div>
         <div class="fire-row">
-          <div class="fire-item ok"><b>482</b><span>烟感/温感 · 正常</span></div>
-          <div class="fire-item ok"><b>96</b><span>消火栓 · 完好</span></div>
-          <div class="fire-item warn"><b>2</b><span>灭火器 · 临期</span></div>
-          <div class="fire-item ok"><b>0</b><span>火警事件</span></div>
+          <div class="fire-item ok"><b>{{ fireSensors }}</b><span>烟感/温感 · 正常</span></div>
+          <div class="fire-item ok"><b>{{ fireEquipment }}</b><span>消防设备 · 完好</span></div>
+          <div class="fire-item" :class="fireAlarmCount ? 'warn' : 'ok'"><b>{{ fireAlarmCount }}</b><span>火警类未关闭告警</span></div>
+          <div class="fire-item ok"><b>{{ activeAlertCount }}</b><span>应急相关未关闭告警</span></div>
         </div>
         <div class="mini-title">排烟风机运行状态</div>
         <el-table :data="smokeFans" size="small" height="130">
@@ -162,8 +166,7 @@
       <!-- 防洪排涝控制 -->
       <div class="panel">
         <div class="panel-title">防洪排涝控制</div>
-        <el-alert type="error" :closable="false" style="margin-bottom: 10px"
-          title="【红色预警】K3+050 积水液位 26.8cm，已联动排涝泵 P1/P2 启动，请关注处置进展。" />
+        <el-alert v-if="waterAlert" :type="waterAlert.type" :closable="false" style="margin-bottom: 10px" :title="waterAlert.title" />
         <div class="mini-title">积水液位实时曲线（K3+050）</div>
         <VChart :option="levelOption" height="150px" />
         <el-table :data="pumps" size="small" height="120" style="margin-top: 8px">
@@ -184,10 +187,10 @@
       <div class="panel acc-panel">
         <div class="panel-title">交通事故控制</div>
         <div class="acc-stats">
-          <div class="acc-item"><b class="num-blue">0</b><span>当前事故</span></div>
-          <div class="acc-item"><b class="num-orange">3</b><span>今日处置</span></div>
-          <div class="acc-item"><b class="num-green">12</b><span>本月处置</span></div>
-          <div class="acc-item"><b class="num-green">4.2</b><span>平均响应(min)</span></div>
+          <div class="acc-item"><b class="num-blue">{{ trafficStats.current }}</b><span>当前事故</span></div>
+          <div class="acc-item"><b class="num-orange">{{ trafficStats.today }}</b><span>今日事件</span></div>
+          <div class="acc-item"><b class="num-green">{{ trafficStats.pending }}</b><span>待确认</span></div>
+          <div class="acc-item"><b class="num-green">{{ trafficStats.confirmRate }}%</b><span>确认率</span></div>
         </div>
         <div class="mini-title">事故处置流程</div>
         <el-timeline class="acc-timeline" style="padding-left: 4px">
@@ -202,20 +205,17 @@
       <div class="panel">
         <div class="panel-title">应急物资</div>
         <div class="mat-grid">
-          <div class="mat-item"><div class="mt-num num-blue">120</div>沙袋（只）</div>
-          <div class="mat-item"><div class="mt-num num-green">8</div>移动泵车（台）</div>
-          <div class="mat-item"><div class="mt-num num-orange">36</div>警示锥（个）</div>
-          <div class="mat-item"><div class="mt-num num-blue">15</div>救生衣（件）</div>
-          <div class="mat-item"><div class="mt-num num-green">24</div>灭火器（具）</div>
-          <div class="mat-item"><div class="mt-num num-blue">10</div>反光服（套）</div>
-          <div class="mat-item"><div class="mt-num num-orange">6</div>应急灯（盏）</div>
-          <div class="mat-item"><div class="mt-num num-green">4</div>破拆工具（套）</div>
+          <div v-for="item in materials" :key="item.id" class="mat-item">
+            <div class="mt-num" :class="item.sufficient === false ? 'num-orange' : 'num-blue'">{{ item.quantity }}</div>
+            {{ item.name }}（{{ item.unit }}）
+          </div>
         </div>
         <div class="mini-title">应急物资点分布</div>
-        <el-table :data="materialSites" size="small" height="120">
+        <el-table :data="materialSites" size="small" height="120" empty-text="暂无物资点">
           <el-table-column prop="site" label="物资点" />
           <el-table-column prop="stake" label="位置" width="110" />
-          <el-table-column prop="stock" label="库存状态" width="90">
+          <el-table-column prop="count" label="物资种类" width="90" />
+          <el-table-column label="库存状态" width="90">
             <template #default="{ row }">
               <el-tag :type="row.enough ? 'success' : 'warning'" size="small">{{ row.enough ? '充足' : '需补充' }}</el-tag>
             </template>
@@ -228,7 +228,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { VideoPlay, VideoPause, RefreshRight, FullScreen } from '@element-plus/icons-vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
 import VChart from '../components/VChart.vue'
@@ -240,6 +240,13 @@ import {
   type TwinScenarioId,
 } from '../config/twinScenarios'
 import { scenarioDuration } from '../utils/simulationPhysics'
+import {
+  api,
+  type EmergencyMaterial,
+  type EmergencyOverview,
+  type TrafficEvent,
+} from '../api/client'
+import { DEMO_MATERIALS, sourceLabel, stakeToLeft, type DataSource } from '../api/usePageData'
 import type { TwinSimState } from '../composables/useTwinSimulation'
 
 type SceneApi = {
@@ -259,64 +266,221 @@ type SceneApi = {
 const sceneRef = ref<SceneApi | null>(null)
 const scenePanelRef = ref<HTMLDivElement | null>(null)
 
-const emergencyPoints: ScenePoint[] = [
-  { id: 'w1', name: '积水点 W1', kind: 'waterLevel', group: 'env', status: 'ok', left: '16%', top: '70%', leftNum: 16, scale: 1.05, stake: 'K2+250', value: '1.8cm', unit: 'cm', history: [
-    { time: '08:00', value: 1.2 }, { time: '10:00', value: 1.4 }, { time: '12:00', value: 1.5 }, { time: '14:00', value: 1.6 }, { time: '16:00', value: 1.8 }, { time: '18:00', value: 1.8 }
-  ] },
-  { id: 'w2', name: '积水点 W2', kind: 'waterLevel', group: 'env', status: 'alarm', left: '46%', top: '66%', leftNum: 46, scale: 1, stake: 'K3+050', value: '26.8cm', alarm: '红色积水预警', unit: 'cm', history: [
-    { time: '12:00', value: 8.2 }, { time: '13:00', value: 11.5 }, { time: '14:00', value: 15.2 }, { time: '15:00', value: 19.6 }, { time: '16:00', value: 23.4 }, { time: '17:00', value: 26.8 }
-  ] },
-  { id: 'w3', name: '积水点 W3', kind: 'waterLevel', group: 'env', status: 'ok', left: '78%', top: '72%', leftNum: 78, scale: 0.8, stake: 'K4+000', value: '2.2cm', unit: 'cm', history: [
-    { time: '08:00', value: 1.6 }, { time: '10:00', value: 1.8 }, { time: '12:00', value: 2.0 }, { time: '14:00', value: 2.1 }, { time: '16:00', value: 2.2 }, { time: '18:00', value: 2.2 }
-  ] },
-  { id: 'p1', name: '排涝泵 P1', kind: 'pump', group: 'mep', status: 'warn', left: '38%', top: '82%', leftNum: 38, scale: 1, stake: '泵房K3+000', value: '运行 0.6MPa', alarm: '联动运行中', unit: 'MPa', history: [
-    { time: '14:00', value: 0 }, { time: '14:30', value: 0.15 }, { time: '15:00', value: 0.35 }, { time: '15:30', value: 0.52 }, { time: '16:00', value: 0.6 }, { time: '17:00', value: 0.6 }
-  ] },
-  { id: 'p2', name: '排涝泵 P2', kind: 'pump', group: 'mep', status: 'warn', left: '58%', top: '84%', leftNum: 58, scale: 0.9, stake: '泵房K3+000', value: '运行 0.6MPa', alarm: '联动运行中', unit: 'MPa', history: [
-    { time: '14:30', value: 0 }, { time: '15:00', value: 0.2 }, { time: '15:30', value: 0.45 }, { time: '16:00', value: 0.58 }, { time: '17:00', value: 0.6 }, { time: '17:30', value: 0.6 }
-  ] },
-  { id: 'p3', name: '排涝泵 P3', kind: 'pump', group: 'mep', status: 'ok', left: '80%', top: '86%', leftNum: 80, scale: 0.75, stake: '泵房K4+100', value: '待机', unit: 'MPa', history: [
-    { time: '08:00', value: 0 }, { time: '10:00', value: 0 }, { time: '12:00', value: 0 }, { time: '14:00', value: 0 }, { time: '16:00', value: 0 }, { time: '18:00', value: 0 }
-  ] },
-  { id: 'fan1', name: '排烟风机 PY-1', kind: 'fan', group: 'mep', status: 'ok', left: '30%', top: '34%', leftNum: 30, scale: 0.9, stake: 'K3+000', value: '待机' },
+const emergencyPoints = computed<ScenePoint[]>(() => {
+  const list: ScenePoint[] = []
+  waterNodes.value.forEach((node, index) => {
+    const leftNum = stakeToLeft(node.stake, 14 + index * 24)
+    list.push({
+      id: `water:${node.deviceCode}`,
+      name: node.deviceName,
+      kind: 'waterLevel',
+      group: 'env',
+      status: node.level === 'red' ? 'alarm' : node.level === 'yellow' ? 'warn' : 'ok',
+      left: `${leftNum}%`,
+      top: '68%',
+      leftNum,
+      scale: node.level === 'red' ? 1.05 : 0.9,
+      stake: node.stake ?? '—',
+      value: `${node.value}cm`,
+      unit: 'cm',
+      alarm: node.level === 'red' ? '红色积水预警' : node.level === 'yellow' ? '黄色积水预警' : undefined,
+    })
+  })
+  pumps.value.slice(0, 5).forEach((pump, index) => {
+    const leftNum = stakeToLeft(pump.stake, 24 + index * 12)
+    list.push({
+      id: `pump:${pump.name}`,
+      name: pump.name,
+      kind: /消防/.test(pump.name) ? 'firePump' : 'pump',
+      group: 'mep',
+      status: pump.run ? 'warn' : 'ok',
+      left: `${leftNum}%`,
+      top: '84%',
+      leftNum,
+      scale: 0.9,
+      stake: pump.stake,
+      value: pump.val,
+      alarm: pump.run ? '联动运行中' : undefined,
+    })
+  })
+  const sites = materialsBySite.value
+  sites.forEach((site, index) => {
+    const leftNum = stakeToLeft(site.stake, 20 + index * 22)
+    list.push({
+      id: `material:${site.site}`,
+      name: `应急物资点 ${site.site}`,
+      kind: 'structureUp',
+      group: 'structure',
+      status: site.enough ? 'ok' : 'warn',
+      left: `${leftNum}%`,
+      top: '28%',
+      leftNum,
+      scale: 0.9,
+      stake: site.stake,
+      value: `${site.count} 类物资`,
+      alarm: site.enough ? undefined : '库存需补充',
+    })
+  })
+  return list.length ? list : DEMO_MATERIALS_POINTS
+})
+
+/** 接口不可用时的应急点位兜底（与原始页面一致） */
+const DEMO_MATERIALS_POINTS: ScenePoint[] = [
+  { id: 'w2', name: '积水点 W2', kind: 'waterLevel', group: 'env', status: 'alarm', left: '46%', top: '66%', leftNum: 46, scale: 1, stake: 'K3+050', value: '26.8cm', alarm: '红色积水预警', unit: 'cm' },
+  { id: 'p1', name: '排涝泵 P1', kind: 'pump', group: 'mep', status: 'warn', left: '38%', top: '82%', leftNum: 38, scale: 1, stake: '泵房K3+000', value: '运行 0.6MPa', alarm: '联动运行中', unit: 'MPa' },
+  { id: 'p2', name: '排涝泵 P2', kind: 'pump', group: 'mep', status: 'warn', left: '58%', top: '84%', leftNum: 58, scale: 0.9, stake: '泵房K3+000', value: '运行 0.6MPa', alarm: '联动运行中', unit: 'MPa' },
   { id: 'fire1', name: '消防水泵 FP-1', kind: 'firePump', group: 'mep', status: 'ok', left: '24%', top: '58%', leftNum: 24, scale: 0.85, stake: '消防泵房', value: '0.6MPa' },
   { id: 'm1', name: '应急物资点 A', kind: 'structureUp', group: 'structure', status: 'ok', left: '22%', top: '28%', leftNum: 22, scale: 0.95, stake: 'K2+400 物资间' },
-  { id: 'm2', name: '应急物资点 B', kind: 'structureUp', group: 'structure', status: 'ok', left: '68%', top: '28%', leftNum: 68, scale: 0.8, stake: 'K3+800 物资间' }
+  { id: 'm2', name: '应急物资点 B', kind: 'structureUp', group: 'structure', status: 'ok', left: '68%', top: '28%', leftNum: 68, scale: 0.8, stake: 'K3+800 物资间' },
 ]
 
-const smokeFans = [
-  { name: '排烟风机 PY-1', stake: 'K3+000', run: false, val: '待机' },
-  { name: '排烟风机 PY-2', stake: 'K3+500', run: false, val: '待机' },
-  { name: '轴流风机 JF-1', stake: 'K2+900', run: true, val: '35Hz' },
-  { name: '轴流风机 JF-2', stake: 'K3+600', run: true, val: '30Hz' }
-]
 
-const pumps = [
-  { name: '排涝泵 P1', stake: '泵房 K3+000', run: true, val: '0.6MPa / 210m³/h' },
-  { name: '排涝泵 P2', stake: '泵房 K3+000', run: true, val: '0.6MPa / 210m³/h' },
-  { name: '排涝泵 P3', stake: '泵房 K4+100', run: false, val: '—' },
-  { name: '移动泵车 M1', stake: '北口值守点', run: false, val: '待命' }
-]
+/* ===== 后端接口数据（应急态势 / 物资 / 积水 / 交通事件） ===== */
 
-const materialSites = [
-  { site: '物资间 A', stake: 'K2+400', enough: true },
-  { site: '物资间 B', stake: 'K3+800', enough: true },
-  { site: '消防救援口', stake: 'K3+100', enough: false }
-]
+const source = ref<DataSource>('loading')
+const emergency = ref<EmergencyOverview | null>(null)
+const materials = ref<EmergencyMaterial[]>([])
+const trafficEvents = ref<TrafficEvent[]>([])
 
-const levelOption = {
-  grid: { left: 40, right: 10, top: 20, bottom: 22 },
-  xAxis: { type: 'category', data: ['13:20', '13:35', '13:50', '14:05', '14:20'], axisLabel: { fontSize: 10 } },
-  yAxis: { type: 'value', name: 'cm', axisLabel: { fontSize: 10 } },
-  series: [{
-    type: 'line', smooth: true, data: [12, 15.2, 19.6, 23.4, 26.8],
-    lineStyle: { color: '#f53f3f' }, itemStyle: { color: '#f53f3f' },
-    areaStyle: { color: 'rgba(245,63,63,0.12)' },
-    markLine: { silent: true, symbol: 'none', data: [
-      { yAxis: 15, lineStyle: { color: '#ffb400', type: 'dashed' }, label: { formatter: '黄色 15cm', fontSize: 9 } },
-      { yAxis: 25, lineStyle: { color: '#f53f3f', type: 'dashed' }, label: { formatter: '红色 25cm', fontSize: 9 } }
-    ] }
-  }]
+const smokeFans = computed(() =>
+  (emergency.value?.pumps ?? [])
+    .filter((pump) => /风机|消防/.test(pump.name))
+    .map((pump) => ({
+      name: pump.name,
+      stake: pump.runState.includes('运行') ? '运行中' : '待机',
+      run: pump.runState.includes('运行'),
+      val: pump.runState,
+    })),
+)
+
+const pumps = computed(() =>
+  (emergency.value?.pumps ?? []).map((pump) => ({
+    name: pump.name,
+    stake: pump.code,
+    run: pump.runState.startsWith('运行'),
+    val: pump.runState,
+  })),
+)
+
+const materialsBySite = computed(() => {
+  const map = new Map<string, { site: string; stake: string; count: number; enough: boolean }>()
+  for (const item of materials.value) {
+    const site = item.site ?? '未分配物资点'
+    if (!map.has(site)) map.set(site, { site, stake: item.stake ?? '—', count: 0, enough: true })
+    const entry = map.get(site)!
+    entry.count += 1
+    if (item.sufficient === false) entry.enough = false
+  }
+  return [...map.values()]
+})
+
+const materialSites = computed(() => materialsBySite.value)
+
+const waterNodes = computed(() => emergency.value?.waterLevels ?? [])
+
+/** 积水红色/黄色预警横幅：取最严重的积水点 */
+const waterAlert = computed(() => {
+  const worst = [...waterNodes.value].sort((a, b) => b.value - a.value)[0]
+  if (!worst) return null
+  if (worst.level === 'red') {
+    return {
+      type: 'error' as const,
+      title: `【红色预警】${worst.stake ?? ''} 积水液位 ${worst.value}cm（红色阈值 ${worst.red}cm），已联动排涝泵启动，请关注处置进展。`,
+    }
+  }
+  if (worst.level === 'yellow') {
+    return {
+      type: 'warning' as const,
+      title: `【黄色预警】${worst.stake ?? ''} 积水液位 ${worst.value}cm（黄色阈值 ${worst.yellow}cm），请加强巡查并预置排涝设备。`,
+    }
+  }
+  return {
+    type: 'success' as const,
+    title: `积水液位均在阈值内，当前最高 ${worst.value}cm（${worst.stake ?? '—'}）。`,
+  }
+})
+
+const activeAlertCount = computed(() => emergency.value?.activeAlerts?.length ?? 0)
+const fireAlarmCount = computed(
+  () =>
+    (emergency.value?.activeAlerts ?? []).filter(
+      (alert) => /火|烟|温/.test(alert.title) || /消防/.test(alert.source),
+    ).length,
+)
+
+/** 消防设备统计来自设备台账分类（/emergency/overview 的 pumps + 告警） */
+const fireSensors = computed(
+  () => (emergency.value?.activeAlerts ?? []).filter((alert) => /烟感|温感|火焰/.test(alert.title)).length,
+)
+const fireEquipment = computed(() => (emergency.value?.pumps ?? []).filter((p) => p.status === 'ok').length)
+
+/** 交通事故统计来自 /traffic-events */
+const trafficStats = computed(() => {
+  const list = trafficEvents.value
+  const today = new Date().toDateString()
+  const current = list.filter((event) => event.status === 'pending').length
+  const todayCount = list.filter((event) => new Date(event.detectedAt).toDateString() === today).length
+  const handled = list.filter((event) => event.status !== 'pending').length
+  return {
+    current,
+    today: todayCount || list.length,
+    pending: current,
+    confirmRate: list.length ? Math.round((handled / list.length) * 100) : 0,
+  }
+})
+
+/** 积水液位曲线：后端 waterLevels 是最新快照，曲线按阈值画出预警线 */
+const levelOption = computed(() => {
+  const nodes = waterNodes.value
+  const yellow = nodes[0]?.yellow ?? 15
+  const red = nodes[0]?.red ?? 25
+  const latest = series.value.find((item) => item.metric === 'water_level')
+  const points = latest?.points ?? []
+  return {
+    grid: { left: 40, right: 10, top: 20, bottom: 22 },
+    tooltip: { trigger: 'axis' },
+    xAxis: {
+      type: 'category',
+      data: points.length ? points.map((point) => point.time.slice(11, 16)) : nodes.map((node) => node.stake ?? '—'),
+      axisLabel: { fontSize: 10 },
+    },
+    yAxis: { type: 'value', name: 'cm', axisLabel: { fontSize: 10 } },
+    series: [
+      {
+        type: 'line',
+        smooth: true,
+        data: points.length ? points.map((point) => point.value) : nodes.map((node) => node.value),
+        lineStyle: { color: '#f53f3f' },
+        itemStyle: { color: '#f53f3f' },
+        areaStyle: { color: 'rgba(245,63,63,0.12)' },
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          data: [
+            { yAxis: yellow, lineStyle: { color: '#ffb400', type: 'dashed' }, label: { formatter: `黄色 ${yellow}cm`, fontSize: 9 } },
+            { yAxis: red, lineStyle: { color: '#f53f3f', type: 'dashed' }, label: { formatter: `红色 ${red}cm`, fontSize: 9 } },
+          ],
+        },
+      },
+    ],
+  }
+})
+
+const series = ref<{ metric: string; label: string; unit?: string | null; points: { time: string; value: number }[] }[]>([])
+
+async function loadEmergencyData() {
+  source.value = 'loading'
+  const [overviewResult, materialResult, eventResult, seriesResult] = await Promise.allSettled([
+    api.get<EmergencyOverview>('/emergency/overview'),
+    api.get<{ items: EmergencyMaterial[]; insufficient: number }>('/emergency/materials'),
+    api.get<{ items: TrafficEvent[] }>('/traffic-events', { pageSize: 20 }),
+    api.get<typeof series.value>('/monitoring/series', { hours: 12 }),
+  ])
+  emergency.value = overviewResult.status === 'fulfilled' ? overviewResult.value : null
+  materials.value = materialResult.status === 'fulfilled' ? materialResult.value.items : DEMO_MATERIALS
+  trafficEvents.value = eventResult.status === 'fulfilled' ? eventResult.value.items : []
+  series.value = seriesResult.status === 'fulfilled' ? seriesResult.value : []
+  source.value = overviewResult.status === 'fulfilled' ? 'api' : 'demo'
 }
 
 /* ===== 孪生VR仿真 ===== */
@@ -426,6 +590,8 @@ function togglePlay() {
 function focusHotspot() {
   void sceneRef.value?.locatePoint(scenario.value.hotspot)
 }
+
+onMounted(loadEmergencyData)
 
 onBeforeUnmount(() => {
   sceneRef.value?.stopSimulation()

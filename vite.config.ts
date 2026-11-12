@@ -18,6 +18,14 @@ function isUnwatchedPath(file: string): boolean {
   )
 }
 
+/**
+ * 后端地址：开发时由 Vite 代理 /api 到本机后端，避免浏览器跨域与硬编码 localhost。
+ * 现场部署可用 VITE_API_TARGET 指向别的后端，例如 http://172.28.12.194:8080。
+ */
+/** 读取环境变量（构建期由 Node 注入；浏览器端不会执行该文件） */
+declare const process: { env: Record<string, string | undefined> } | undefined
+const API_TARGET = (typeof process !== 'undefined' ? process?.env?.VITE_API_TARGET : undefined) || 'http://127.0.0.1:8080'
+
 export default defineConfig({
   plugins: [vue(), cesium()],
   server: {
@@ -26,6 +34,14 @@ export default defineConfig({
     strictPort: true,
     // 允许局域网 IP 访问；原先只放行 localhost，用 172.28.x 打开会被拦住
     allowedHosts: true,
+    proxy: {
+      // 前端只请求相对路径 /api/v1/...，由开发服务器转发到后端
+      '/api': {
+        target: API_TARGET,
+        changeOrigin: true,
+        ws: false,
+      },
+    },
     // 三维瓦片数量极大，监听它们会把开发服务卡死，页面请求一直挂起
     watch: {
       ignored: [isUnwatchedPath],

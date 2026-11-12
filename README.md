@@ -4,6 +4,45 @@ Vue 3 / TypeScript / Vite / Cesium / Element Plus / ECharts 可视化前端。
 
 给项目负责人的使用说明、思维导图、原型和验收清单在 [docs/交付/05-交付文件索引.md](docs/交付/05-交付文件索引.md)。
 
+前端可独立运行（演示数据），也可连接 `server/` 目录下的后端服务读取真实业务数据。后端为 Node.js 22 + Fastify 5 + PostgreSQL，带在线 Swagger 文档和一键启动脚本。
+
+## 后端服务（server/）
+
+```bash
+cd server
+npm install                 # 首次
+# Windows：双击 start-backend.bat（自动检查 Node/依赖/.env/数据库/健康检查/接口自检）
+npm run db:check            # 数据库连通性与表结构自检
+npm start                   # 启动服务（默认 8080）
+npm run test:api            # 接口自检 85 项（写链路 + 鉴权 + 状态机）
+npm run openapi:export      # 导出 docs/openapi.json
+```
+
+| 项目 | 值 |
+| --- | --- |
+| 数据库 | PostgreSQL `172.28.12.194:5432`，库 `lhsd_app`，用户 `postgres`（见 `server/.env.example`） |
+| 接口文档 | `http://localhost:8080/api/v1/docs`（Swagger UI）、`/api/v1/docs/json` |
+| 健康检查 | `http://localhost:8080/api/v1/health` |
+| 演示账号 | `admin` / `manager` / `engineer` / `operator` / `viewer`，口令均为 `Lhsd@2026` |
+| 鉴权 | 写接口需 `Authorization: Bearer <token>`；读接口默认匿名，`REQUIRE_AUTH_FOR_READ=true` 可强制全量鉴权 |
+
+统一响应 `{ code: 0, message: 'ok', data, traceId }`，失败 `{ code, message, details?, traceId }`（`40101` 未登录、`40301` 权限不足、`40401` 不存在、`40901` 状态冲突）。
+
+**Windows 一键启动**：`server/start-backend.bat` 依次完成 Node 版本检查 → 依赖安装 → `.env` 生成 → 数据库自检 → 启动服务 → 健康检查轮询 → 接口自检，全绿后自动打开文档页；`start-backend.ps1` 为等价 PowerShell 版（可后台启动并写 `server.log`），`stop-backend.bat` 按端口停止服务。失败时脚本会打印可执行的排查步骤（Node 缺失、PostgreSQL 未启动、`lhsd_app` 未创建、`pg_hba.conf` 鉴权、5432 防火墙）。
+
+### 数据库表与业务接口
+
+26 张业务表（`server/sql/001_schema.sql`）覆盖设备台账、告警、工单、病害、监测遥测、交通断面/事件/发布、公众服务、应急物资、资产资料、审计日志等；接口按域拆成 13 个路由模块，共 61 个路径。
+
+### 前端如何连后端
+
+`vite.config.ts` 已配置 `/api` 代理到 `http://127.0.0.1:8080`（可用 `VITE_API_TARGET` 指向现场地址），前端只请求相对路径，避免跨域和硬编码 localhost：
+
+```bash
+npm run dev            # 前端 5188，接口代理到本机 8080
+npm run backend        # 若已在 server/ 安装依赖，可直接起后端（npm start 的等价写法见 server/package.json）
+```
+
 ## 本地运行
 
 建议 Node.js 22 LTS，使用支持 WebGL 2 的现代桌面浏览器。
@@ -103,7 +142,8 @@ npm run calibrate:roaming
 - 有告警的点位显示红/琥珀色动态图标和光圈，不被普通聚合吞掉；详情明确标记为模拟事件。
 - 支持手动前后切换、暂停，鼠标悬停及键盘聚焦时暂停；切到后台暂停计时。
 - 尊重 `prefers-reduced-motion`：停止自动告警轮播、呼吸动画及巡游/推演自动播放，仍可手动检视。
-- 当前事件位于 `src/config/alerts.ts`，**未接入后台实时告警接口**。
+- **现已接入后端告警接口**：顶部告警角标、预警横幅、总览告警面板的数据来自 `GET /api/v1/alerts/active`，告警确定位通过 `GET /api/v1/scene/overview` 的点位或按桩号就近匹配；后端不可用时回落到 `src/config/alerts.ts` 的示例事件，并在页面角落标注「示例数据」。
+- 告警确认 / 批量确认 / 关闭走后端写接口（需登录，`POST /alerts/{id}/acknowledge`、`/alerts/batch-acknowledge`、`/alerts/{id}/close`），操作会写入审计日志。
 
 ## 重点监控与视频联动
 
@@ -153,5 +193,19 @@ CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:twin
 | `src/components/VideoPreviewDialog.vue`                 | 可拖动放大视频/图片窗口、错误重试        |
 | `src/components/AlertTicker.vue` / `AlarmPanel.vue`     | 可定位的动态预警与告警展示               |
 | `src/composables/useRotatingFeed.ts`                    | 可暂停、尊重动效偏好的轮播计时           |
+| `src/api/client.ts`                                     | 接口客户端：envelop 解析、JWT、错误码、超时与离线标记 |
+| `src/api/usePageData.ts`                                | 页面数据装配、加载/失败状态与示例数据回落 |
+| `src/api/usePageData.ts`（工具函数）                     | 桩号 → 画面坐标映射、状态与等级字典      |
+| `src/components/LoginDialog.vue`                        | 演示账号一键登录，写操作前鉴权           |
 
-源码中的业务统计、工单、告警和监控画面仍为演示数据；真实 BIM 几何/构件属性与模拟业务状态分开标注。已彻底移除标号组件及 PRD 说明编辑运行时代码。
+## 数据边界
+
+| 数据 | 来源 | 说明 |
+| --- | --- | --- |
+| BIM 几何、构件属性、巡游路径 | 真实竣工模型 | 来自随仓库提供的 `public/三维数据/`，非接口数据 |
+| 设备台账、告警、工单、病害、监测遥测、交通断面/事件、发布任务、公众反馈、预警、物资、资产资料 | **后端接口** | 库内种子数据由 `server/src/db/seed/` 写入，属演示数据；接入现场 IoT 网关后即为真实数据 |
+| 视频画面 | 示例图片 / GIF | 仅占位，未接入实时视频流；`cameras.streamUrl` 预留接入点 |
+| 工况推演（积水/火灾/事故/养护）读数 | 前端脚本演算 | 由 `src/config/twinScenarios.ts` 与 `src/utils/simulationPhysics.ts` 计算，不是实测值 |
+| 满意度、部分环境聚合指标 | 后端聚合或常量 | 数据库无对应埋点时后端返回常量，接口文档已注明 |
+
+页面左上角/顶部会显示数据来源角标（`接口实时` / `示例数据` / `加载中`），后端未启动时前端自动降级但不空白，也不伪造实时告警。已彻底移除标号组件及 PRD 说明编辑运行时代码。

@@ -14,7 +14,15 @@
         @equipment-select="onEquipmentSelect"
       />
       <!-- 操作提示 -->
-      <div class="ctx-hint">💡 点击左侧资产列表，或点击 / 右键三维模型构件，弹出关联资料面板</div>
+      <div class="ctx-hint">
+        💡 点击左侧资产列表，或点击 / 右键三维模型构件，弹出关联资料面板
+        <span class="ctx-source" :class="assetSource">
+          {{ sourceLabel(assetSource) }} · 资产台账 {{ assetList.length }} 项
+          <template v-if="!loggedIn">
+            （<button type="button" class="link-btn" @click="askLogin">登录后可更新台账 / 提交工单</button>）
+          </template>
+        </span>
+      </div>
     </div>
 
     <!-- 左侧资产列表（按图层子项分类） -->
@@ -219,6 +227,9 @@ import { computed, nextTick, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Edit, Tools, Document, ArrowRight, Search, Close } from '@element-plus/icons-vue'
 import TunnelScene, { type ScenePoint } from '../components/TunnelScene.vue'
+import { onMounted } from 'vue'
+import { api, ApiError, type AssetDetail } from '../api/client'
+import { sourceLabel, type DataSource } from '../api/usePageData'
 
 type SceneApi = {
   locatePoint: (id: string) => void | Promise<void>
@@ -277,7 +288,7 @@ interface Asset {
   docList: { name: string; icon: string; size: string; date: string; ver: string }[]
 }
 
-const assets: Record<string, Asset> = {
+const localAssets: Record<string, Asset> = {
   a1: {
     id: 'a1', name: '轴流风机 JF-1', code: 'SYS-JF-0001', icon: '🌀', type: '通风设备',
     stake: 'K2+900', pos: '顶棚吊装 · 左侧车道上方 5.2m', sys: '隧道通风系统', install: '2022-06-15', status: 'ok',
@@ -992,12 +1003,107 @@ const tab = ref('model')
 const searchKw = ref('')
 const collapsed = reactive<Record<string, boolean>>({})
 
-const assetList = Object.values(assets)
+/* ===== 后端资产台账：优先使用 /assets，接口不可用时沿用本地示例 ===== */
+const assetSource = ref<DataSource>('loading')
+const loggedIn = computed(() => {
+  try {
+    return !!localStorage.getItem('lhsd.token')
+  } catch {
+    return false
+  }
+})
+function askLogin() {
+  ElMessage.info('请在右上角「登录」后重试；演示账号 engineer / Lhsd@2026')
+}
+/** 后端资产（设备台账）与本地示例并存：点位上以本地资产为骨架，后端记录补充真实字段 */
+const remoteAssets = ref<AssetDetail[]>([])
+type AssetsResponse = {
+  id: number
+  name: string
+  code: string
+  categoryCode?: string | null
+  categoryName?: string | null
+  systemName?: string | null
+  stake?: string | null
+  status: string
+  installDate?: string | null
+  pointId?: string | null
+}
+const remoteSlots = ref<AssetsResponse[]>([])
+
+const icons: Record<string, string> = {
+  camera: '📹', infoBoard: '🖥️', fan: '🌀', pump: '⚙️', firePump: '🚒',
+  lamp: '💡', covi: '📡', illum: '🔆', waterLevel: '💧', stress: '📐', wind: '🌬️',
+}
+
+function statusOf(value: string): Asset['status'] {
+  return value === 'alarm' ? 'alarm' : value === 'warn' ? 'warn' : value === 'offline' ? 'offline' : 'ok'
+}
+
+/** 后端资产详情 → 资料面板结构（四个页签字段一致） */
+function assetFromRemote(row: AssetDetail | AssetsResponse, detail?: AssetDetail): Asset {
+  const full = (detail ?? row) as AssetDetail
+  const base = row as AssetDetail
+  return {
+    id: (base.pointId || `asset:${base.code || base.name}`) as string,
+    name: base.name,
+    code: base.code,
+    icon: icons[base.categoryCode ?? ''] ?? '🏷️',
+    type: base.categoryName ?? '资产设备',
+    stake: base.stake ?? '—',
+    pos: full.positionDesc || base.stake || '隧道内',
+    sys: base.systemName ?? '—',
+    install: base.installDate ?? '—',
+    status: statusOf(row.status),
+    docs: (full.documents ?? []).length,
+    structure: (full.structure ?? []).map((item) => ({ k: item.key, v: item.value })),
+    params: (full.parameters ?? full.params ?? []).map((item) => ({ k: item.key, v: item.value })),
+    materials: (full.materials ?? []).map((item) => ({ k: item.key, v: item.value })),
+    guide: (full.guides ?? []).map((item) => ({ t: item.title, d: item.detail ?? '' })),
+    docList: (full.documents ?? []).map((item) => ({
+      name: item.name,
+      icon: item.type === 'DWG' ? '📐' : '📄',
+      size: item.size ?? '—',
+      date: item.date ?? base.installDate ?? '—',
+      ver: item.version ?? 'V1.0',
+    })),
+  }
+}
+
+async function loadAssets() {
+  assetSource.value = 'loading'
+  try {
+    const result = await api.get<{ items: AssetsResponse[] } | AssetsResponse[]>('/assets', { pageSize: 200 })
+    remoteSlots.value = Array.isArray(result) ? result : result.items
+    // 把后端台账按 pointId / 名称并入本地骨架，保证三维点位与真实台账一一对应
+    for (const row of remoteSlots.value) {
+      const targetId = row.pointId || `asset:${row.code}`
+      const local = assets[targetId] ?? Object.values(assets).find((item) => item.name === row.name)
+      const merged = assetFromRemote(row)
+      if (local) {
+        local.code = row.code
+        local.sys = row.systemName ?? local.sys
+        local.status = statusOf(row.status)
+        if (row.installDate) local.install = row.installDate
+      } else {
+        assets[targetId] = merged
+      }
+    }
+    assetSource.value = 'api'
+  } catch {
+    assetSource.value = 'demo'
+  }
+}
+
+onMounted(loadAssets)
+
+const assets = reactive<Record<string, Asset>>({ ...localAssets })
+const assetList = computed(() => Object.values(assets))
 
 /* 三级分组（图层分组 → 图层子项 → 设备）+ 搜索过滤 */
 const groupedAssets = computed(() => {
   const kw = searchKw.value.trim()
-  const filtered = assetList.filter(a => {
+  const filtered = assetList.value.filter(a => {
     if (!kw) return true
     return a.name.includes(kw) || a.code.includes(kw) || a.stake.includes(kw) || a.type.includes(kw) || a.sys.includes(kw)
   })
@@ -1021,8 +1127,21 @@ function toggleGroup(key: string) {
 
 const sceneRef = ref<SceneApi | null>(null)
 
-function openAssetPanel(a: Asset, locate = false) {
+async function openAssetPanel(a: Asset, locate = false) {
   curAsset.value = a
+  // 真实台账资产：进入面板时拉取后端四页签详情（结构/参数/材质/维保/资料）
+  if (!a.id.startsWith('pick:') && (remoteSlots.value.some((row) => (row.pointId || `asset:${row.code}`) === a.id) || a.code.startsWith('SYS-'))) {
+    try {
+      const row = remoteSlots.value.find((item) => (item.pointId || `asset:${item.code}`) === a.id)
+      const detail = row ? await api.get<AssetDetail>(`/assets/${row.id}`) : null
+      if (detail && curAsset.value?.id === a.id) {
+        Object.assign(a, assetFromRemote(row!, detail))
+        curAsset.value = a
+      }
+    } catch {
+      /* 详情失败时保留列表字段，不阻塞面板 */
+    }
+  }
   tab.value = 'model'
   // 展开所属分组，保证列表高亮可见
   const sub = subOfAsset(a.id)
@@ -1033,9 +1152,9 @@ function openAssetPanel(a: Asset, locate = false) {
 }
 
 function matchAssetByName(name: string): Asset | undefined {
-  const exact = assetList.find((a) => a.name === name)
+  const exact = assetList.value.find((a) => a.name === name)
   if (exact) return exact
-  return assetList.find(
+  return assetList.value.find(
     (a) => name.includes(a.name) || a.name.includes(name.replace(/\s+/g, '')),
   )
 }
@@ -1102,15 +1221,33 @@ function openUpdate() {
   })
   updateVisible.value = true
 }
-function saveUpdate() {
-  if (curAsset.value) {
-    Object.assign(curAsset.value, {
-      code: updateForm.code, name: updateForm.name, sys: updateForm.sys,
-      pos: updateForm.pos, install: updateForm.install, status: updateForm.status
+async function saveUpdate() {
+  const target = curAsset.value
+  if (!target) return
+  const row = remoteSlots.value.find((item) => (item.pointId || `asset:${item.code}`) === target.id)
+  const statusMap: Record<string, string> = { ok: 'ok', warn: 'warn', alarm: 'alarm', offline: 'offline' }
+  try {
+    if (row) {
+      // 后端设备台账：运行状态可回填，编号/名称属主数据，界面提示只读
+      await api.patch(`/devices/${row.id}/status`, {
+        status: statusMap[updateForm.status] ?? 'ok',
+        runState: updateForm.pos || undefined,
+      })
+      Object.assign(row, { status: updateForm.status, stake: row.stake })
+    }
+    Object.assign(target, {
+      name: updateForm.name, sys: updateForm.sys,
+      pos: updateForm.pos, install: updateForm.install, status: statusMap[updateForm.status] as Asset['status'],
     })
+    updateVisible.value = false
+    ElMessage.success(row ? '设备状态已回填到台账' : '设备信息已更新（本地演示数据）')
+  } catch (error) {
+    ElMessage.error(
+      error instanceof ApiError && (error.status === 401 || error.status === 403)
+        ? `${error.message}（更新台账需运维工程师及以上角色）`
+        : error instanceof ApiError ? error.message : '更新失败',
+    )
   }
-  updateVisible.value = false
-  ElMessage.success('设备信息已更新')
 }
 
 /* 维护工单 */
@@ -1120,9 +1257,32 @@ function openMaintain() {
   Object.assign(maintainForm, { type: '日常巡检', level: '一般', date: '', owner: '', content: '' })
   maintainVisible.value = true
 }
-function submitMaintain() {
-  maintainVisible.value = false
-  ElMessage.success('维护工单已提交，待派单')
+async function submitMaintain() {
+  const target = curAsset.value
+  if (!target) return
+  const typeMap: Record<string, string> = { 日常巡检: 'inspection', 故障维修: 'repair', 计划保养: 'maintain', 应急处置: 'emergency' }
+  const priorityMap: Record<string, string> = { 一般: 'normal', 重要: 'high', 紧急: 'urgent' }
+  try {
+    await api.post('/work-orders', {
+      type: typeMap[maintainForm.type] ?? 'maintain',
+      title: `${maintainForm.type}：${target.name}`,
+      description: [maintainForm.content, maintainForm.owner ? `负责人：${maintainForm.owner}` : '', maintainForm.date ? `计划日期：${maintainForm.date}` : '']
+        .filter(Boolean)
+        .join('；') || `${target.name} ${maintainForm.type}`,
+      priority: priorityMap[maintainForm.level] ?? 'normal',
+      stake: target.stake,
+      slaHours: maintainForm.level === '紧急' ? 2 : maintainForm.level === '重要' ? 8 : 24,
+      source: 'manual',
+    })
+    maintainVisible.value = false
+    ElMessage.success('维护工单已提交，待派单')
+  } catch (error) {
+    ElMessage.error(
+      error instanceof ApiError && (error.status === 401 || error.status === 403)
+        ? `${error.message}（创建工单需运维工程师及以上角色）`
+        : error instanceof ApiError ? error.message : '工单提交失败',
+    )
+  }
 }
 
 /* 维保记录 */
@@ -1161,6 +1321,14 @@ function openRecord() {
   backdrop-filter: blur(10px);
   z-index: 50;
   pointer-events: none;
+  .ctx-source {
+    margin-left: 8px; color: #7fd7ff;
+    &.demo { color: #ffd591; }
+    .link-btn {
+      pointer-events: auto; background: none; border: none; padding: 0;
+      font-size: 12px; color: #7fd7ff; text-decoration: underline; cursor: pointer;
+    }
+  }
 }
 
 /* 左侧资产列表 */
